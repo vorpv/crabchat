@@ -343,14 +343,18 @@ export function ChatWorkspace() {
   }, [activeProviderId, usageStatus])
   const contextWindow = useMemo<ContextWindowStatus>(() => {
     const usedTokens = activeSession?.contextTokens || 0
-    const capacityTokens = getModelContextCapacity(activeModel)
+    const capacityTokens =
+      activeSession?.contextCapacityTokens || getModelContextCapacity(activeModel)
     const usagePercent = capacityTokens
       ? Math.min(100, Math.max(0, Math.round((usedTokens / capacityTokens) * 100)))
       : 0
 
     return {
       usedTokens,
-      totalTokens: activeSession?.totalTokens,
+      totalTokens:
+        activeSession?.totalTokens !== undefined && activeSession.totalTokens !== usedTokens
+          ? activeSession.totalTokens
+          : undefined,
       capacityTokens,
       usagePercent,
     }

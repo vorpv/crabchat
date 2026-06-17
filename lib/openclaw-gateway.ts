@@ -916,8 +916,19 @@ function normalizeSession(raw: unknown): Session {
       : undefined,
     thinkingOptions: normalizeThinkingOptions(item.thinkingOptions),
     thinkingDefault: asString(item.thinkingDefault),
-    contextTokens: asNumber(item.contextTokens ?? item.context_tokens),
+    inputTokens: asNumber(item.inputTokens ?? item.input_tokens),
+    outputTokens: asNumber(item.outputTokens ?? item.output_tokens),
+    contextTokens: asNumber(
+      item.usedContextTokens ??
+        item.used_context_tokens ??
+        item.contextUsedTokens ??
+        item.context_used_tokens ??
+        item.totalTokens ??
+        item.total_tokens
+    ),
+    contextCapacityTokens: asNumber(item.contextTokens ?? item.context_tokens),
     totalTokens: asNumber(item.totalTokens ?? item.total_tokens),
+    totalTokensFresh: item.totalTokensFresh === true,
     updatedAt: normalizeTimestamp(item.updatedAt ?? item.updated_at ?? item.modifiedAt),
     lastMessage: asString(item.lastMessage) || asString(item.last_message),
   }

@@ -19,8 +19,12 @@ export interface Session {
   thinkingLevels?: ThinkingLevelOption[]
   thinkingOptions?: string[]
   thinkingDefault?: string
+  inputTokens?: number
+  outputTokens?: number
   contextTokens?: number
+  contextCapacityTokens?: number
   totalTokens?: number
+  totalTokensFresh?: boolean
   createdAt?: Date
   updatedAt?: Date
   lastMessage?: string
