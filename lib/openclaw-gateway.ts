@@ -16,7 +16,20 @@ import {
 import { dirname, resolve as pathResolve } from "node:path"
 import WebSocket from "ws"
 import type { KeyObject } from "node:crypto"
-import type { Attachment, Message, Session, ToolCall } from "@/lib/types"
+import type {
+  Agent,
+  AgentActivity,
+  Attachment,
+  Message,
+  ModelOption,
+  ProviderUsageSummary,
+  ProviderUsageWindow,
+  Session,
+  SessionDefaults,
+  ThinkingLevelOption,
+  ToolCall,
+  UsageStatus,
+} from "@/lib/types"
 
 const DEFAULT_GATEWAY_URL = "ws://127.0.0.1:18789"
 const REQUEST_TIMEOUT_MS = 20_000
@@ -49,11 +62,25 @@ type DeviceIdentity = {
 
 type SessionListCache = {
   expiresAt: number
-  value: Session[]
+  value: {
+    sessions: Session[]
+    defaults: SessionDefaults
+  }
 }
 
 type GatewayQueue = {
   tail: Promise<void>
+}
+
+type PendingGatewayRequest = {
+  reject: (error: Error) => void
+  resolve: (payload: unknown) => void
+  timeout: ReturnType<typeof setTimeout>
+}
+
+type OpenGatewayOptions = {
+  onEvent?: (event: string, payload: GatewayFrame) => void
+  onClose?: (error: AppError) => void
 }
 
 function getGatewayQueue() {
@@ -92,7 +119,7 @@ function getSessionListCache() {
   return globals[SESSION_LIST_CACHE]
 }
 
-function setSessionListCache(value: Session[]) {
+function setSessionListCache(value: { sessions: Session[]; defaults: SessionDefaults }) {
   const globals = globalThis as typeof globalThis & {
     [SESSION_LIST_CACHE]?: SessionListCache
   }
@@ -120,6 +147,11 @@ export class AppError extends Error {
   }
 }
 
+type ErrorResponseContext = {
+  method?: string
+  path?: string
+}
+
 function getGatewayAuth(): GatewayAuth {
   const token = process.env.OCLAW_GATEWAY_TOKEN
   const password = process.env.OCLAW_GATEWAY_PASSWORD
@@ -137,6 +169,15 @@ function getGatewayAuth(): GatewayAuth {
 
 function getGatewayUrl() {
   return process.env.OCLAW_GATEWAY_URL || DEFAULT_GATEWAY_URL
+}
+
+function isLoopbackGatewayUrl(url: string) {
+  try {
+    const parsed = new URL(url)
+    return ["127.0.0.1", "localhost", "::1"].includes(parsed.hostname)
+  } catch {
+    return false
+  }
 }
 
 function isStoredDeviceKeys(value: unknown): value is StoredDeviceKeys {
@@ -286,6 +327,14 @@ function asString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined
 }
 
+function asNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value)
+    if (Number.isFinite(parsed)) return parsed
+  }
+}
+
 function normalizeError(frame: GatewayFrame) {
   const error = asRecord(frame.error)
   return (
@@ -372,11 +421,31 @@ function getNonce(frame: GatewayFrame) {
   )
 }
 
+function isEventFrame(frame: GatewayFrame) {
+  return frame.type === "event" && typeof frame.event === "string"
+}
+
+function makeGatewayCloseError(code: number, reasonBuffer: Buffer) {
+  const reason = reasonBuffer.toString()
+  if (code === 1008) reportPairingRequired(reason)
+
+  return new AppError(
+    reason
+      ? `Gateway connection closed (${code}): ${reason}`
+      : `Gateway connection closed (${code})`,
+    503,
+    "gateway_connection_closed"
+  )
+}
+
 async function makeConnectionRequest(auth: GatewayAuth, challenge?: string) {
   const clientId = "gateway-client"
-  const clientMode = "ui"
+  const clientMode = "backend"
   const role = "operator"
-  const scopes = ["operator.admin"]
+  const scopes = ["operator.read", "operator.write", "operator.admin"]
+  const gatewayUrl = getGatewayUrl()
+  const useSharedLoopbackBackendAuth =
+    Boolean(auth.token || auth.password) && isLoopbackGatewayUrl(gatewayUrl)
   const request: GatewayFrame = {
     minProtocol: 4,
     maxProtocol: 4,
@@ -396,35 +465,37 @@ async function makeConnectionRequest(auth: GatewayAuth, challenge?: string) {
     },
   }
 
-  try {
-    const identity = await getDeviceIdentity()
-    const signedAt = Date.now()
-    const version = challenge ? "v2" : "v1"
-    const base = [
-      version,
-      identity.deviceId,
-      clientId,
-      clientMode,
-      role,
-      scopes.join(","),
-      String(signedAt),
-      auth.token || "",
-    ]
-    if (version === "v2") base.push(challenge || "")
-    const signature = signPayload(identity.privateKey, base.join("|"))
+  if (!useSharedLoopbackBackendAuth) {
+    try {
+      const identity = await getDeviceIdentity()
+      const signedAt = Date.now()
+      const version = challenge ? "v2" : "v1"
+      const base = [
+        version,
+        identity.deviceId,
+        clientId,
+        clientMode,
+        role,
+        scopes.join(","),
+        String(signedAt),
+        auth.token || "",
+      ]
+      if (version === "v2") base.push(challenge || "")
+      const signature = signPayload(identity.privateKey, base.join("|"))
 
-    request.device = {
-      id: identity.deviceId,
-      publicKey: identity.publicKeyRawBase64Url,
-      signature,
-      signedAt,
-      nonce: challenge,
+      request.device = {
+        id: identity.deviceId,
+        publicKey: identity.publicKeyRawBase64Url,
+        signature,
+        signedAt,
+        nonce: challenge,
+      }
+    } catch (error) {
+      console.warn(
+        "[openclaw-gateway] Device auth unavailable, continuing without device signature:",
+        error instanceof Error ? error.message : String(error)
+      )
     }
-  } catch (error) {
-    console.warn(
-      "[openclaw-gateway] Device auth unavailable, continuing without device signature:",
-      error instanceof Error ? error.message : String(error)
-    )
   }
 
   return request
@@ -439,13 +510,34 @@ function makeRpcFrame(id: string, method: string, params?: unknown) {
   }
 }
 
-async function openGateway() {
+async function openGateway(options: OpenGatewayOptions = {}) {
   const auth = getGatewayAuth()
   const ws = new WebSocket(getGatewayUrl())
+  const pendingFrames: GatewayFrame[] = []
+
+  // Buffer early frames so we do not miss the pre-connect challenge if the
+  // gateway sends it immediately after the socket opens.
+  const bufferEarlyFrames = (data: WebSocket.RawData) => {
+    try {
+      const frame = asRecord(JSON.parse(String(data)))
+      if (frame) pendingFrames.push(frame)
+    } catch {
+      // Ignore malformed early frames; the normal request path will fail cleanly.
+    }
+  }
+
+  ws.on("message", bufferEarlyFrames)
 
   const waitForOpen = new Promise<void>((resolve, reject) => {
     const timeout = setTimeout(
-      () => reject(new AppError("Gateway connection timed out", 503)),
+      () =>
+        reject(
+          new AppError(
+            "Gateway connection timed out",
+            503,
+            "gateway_connection_timeout"
+          )
+        ),
       REQUEST_TIMEOUT_MS
     )
 
@@ -453,15 +545,19 @@ async function openGateway() {
       clearTimeout(timeout)
       resolve()
     })
-    ws.once("error", () => {
+    ws.once("error", (error) => {
       clearTimeout(timeout)
-      reject(new AppError("Gateway connection failed", 503))
+      reject(
+        new AppError(
+          error.message || "Gateway connection failed",
+          503,
+          "gateway_connection_failed"
+        )
+      )
     })
   })
 
   await waitForOpen
-
-  const pendingFrames: GatewayFrame[] = []
 
   const nextFrame = (predicate: (frame: GatewayFrame) => boolean) =>
     new Promise<GatewayFrame>((resolve, reject) => {
@@ -474,7 +570,13 @@ async function openGateway() {
 
       const timeout = setTimeout(() => {
         cleanup()
-        reject(new AppError("Gateway response timed out", 503))
+        reject(
+          new AppError(
+            "Gateway response timed out",
+            503,
+            "gateway_response_timeout"
+          )
+        )
       }, REQUEST_TIMEOUT_MS)
 
       const onMessage = (data: WebSocket.RawData) => {
@@ -502,8 +604,17 @@ async function openGateway() {
 
       const onClose = (code: number, reasonBuffer: Buffer) => {
         cleanup()
-        if (code === 1008) reportPairingRequired(reasonBuffer.toString())
-        reject(new AppError("Gateway connection closed", 503))
+        const reason = reasonBuffer.toString()
+        if (code === 1008) reportPairingRequired(reason)
+        reject(
+          new AppError(
+            reason
+              ? `Gateway connection closed (${code}): ${reason}`
+              : `Gateway connection closed (${code})`,
+            503,
+            "gateway_connection_closed"
+          )
+        )
       }
 
       const cleanup = () => {
@@ -520,7 +631,11 @@ async function openGateway() {
   const challenge = isChallengeFrame(firstFrame) ? getNonce(firstFrame) : undefined
   if (!challenge) {
     pendingFrames.push(firstFrame)
-    throw new AppError("Gateway connect challenge missing nonce", 503)
+    throw new AppError(
+      "Gateway connect challenge missing nonce",
+      503,
+      "gateway_challenge_missing_nonce"
+    )
   }
   if (firstFrame && !isChallengeFrame(firstFrame)) pendingFrames.push(firstFrame)
 
@@ -535,15 +650,105 @@ async function openGateway() {
     return frame.id === connectId && frame.ok === true
   }).catch((error) => {
     if (error instanceof AppError) throw error
-    throw new AppError("Gateway handshake failed", 503)
+    throw new AppError("Gateway handshake failed", 503, "gateway_handshake_failed")
   })
+
+  ws.off("message", bufferEarlyFrames)
+
+  const pendingRequests = new Map<string, PendingGatewayRequest>()
+  let closedError: AppError | null = null
+
+  const rejectPendingRequests = (error: AppError) => {
+    for (const pending of pendingRequests.values()) {
+      clearTimeout(pending.timeout)
+      pending.reject(error)
+    }
+    pendingRequests.clear()
+  }
+
+  const handleClose = (code: number, reasonBuffer: Buffer) => {
+    closedError = makeGatewayCloseError(code, reasonBuffer)
+    rejectPendingRequests(closedError)
+    options.onClose?.(closedError)
+  }
+
+  const dispatchFrame = (data: WebSocket.RawData) => {
+    let frame: GatewayFrame | undefined
+    try {
+      frame = asRecord(JSON.parse(String(data)))
+    } catch {
+      return
+    }
+
+    if (!frame) return
+
+    const id = asString(frame.id)
+    if (id && pendingRequests.has(id)) {
+      const pending = pendingRequests.get(id)
+      if (!pending) return
+      pendingRequests.delete(id)
+      clearTimeout(pending.timeout)
+      try {
+        pending.resolve(extractPayload(frame))
+      } catch (error) {
+        pending.reject(
+          error instanceof Error
+            ? error
+            : new AppError("Gateway request failed", 503, "gateway_request_failed")
+        )
+      }
+      return
+    }
+
+    if (isEventFrame(frame)) {
+      options.onEvent?.(String(frame.event), asRecord(frame.payload) ?? frame)
+      return
+    }
+
+    pendingFrames.push(frame)
+  }
+
+  ws.on("message", dispatchFrame)
+  ws.on("close", handleClose)
+
+  for (const frame of pendingFrames.splice(0)) {
+    if (isEventFrame(frame)) {
+      options.onEvent?.(String(frame.event), asRecord(frame.payload) ?? frame)
+    }
+  }
 
   return {
     request: async (method: string, params?: unknown) => {
+      if (closedError) throw closedError
       const id = randomUUID()
-      ws.send(JSON.stringify(makeRpcFrame(id, method, params)))
-      const frame = await nextFrame((candidate) => candidate.id === id)
-      return extractPayload(frame)
+      return new Promise<unknown>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          pendingRequests.delete(id)
+          reject(
+            new AppError(
+              "Gateway response timed out",
+              503,
+              "gateway_response_timeout"
+            )
+          )
+        }, REQUEST_TIMEOUT_MS)
+
+        pendingRequests.set(id, { resolve, reject, timeout })
+
+        try {
+          ws.send(JSON.stringify(makeRpcFrame(id, method, params)))
+        } catch (error) {
+          clearTimeout(timeout)
+          pendingRequests.delete(id)
+          reject(
+            new AppError(
+              error instanceof Error ? error.message : "Gateway request failed",
+              503,
+              "gateway_request_failed"
+            )
+          )
+        }
+      })
     },
     close: () => ws.close(),
   }
@@ -589,6 +794,75 @@ function normalizeTimestamp(value: unknown) {
   return new Date()
 }
 
+function getAgentIdFromSessionKey(key: string) {
+  const match = /^agent:([^:]+):/.exec(key)
+  return match?.[1]
+}
+
+function normalizeThinkingLevelOption(raw: unknown): ThinkingLevelOption | undefined {
+  const item = asRecord(raw)
+  if (!item) return undefined
+
+  const id = asString(item.id)
+  const label = asString(item.label)
+  if (!id || !label) return undefined
+
+  return { id, label }
+}
+
+function normalizeThinkingOptions(value: unknown) {
+  return Array.isArray(value)
+    ? value
+        .map((item) => (typeof item === "string" ? item.trim() : ""))
+        .filter(Boolean)
+    : undefined
+}
+
+function normalizeUsageWindow(raw: unknown): ProviderUsageWindow | undefined {
+  const item = asRecord(raw)
+  if (!item) return undefined
+
+  const label = asString(item.label)
+  const usedPercent = asNumber(item.usedPercent ?? item.used_percent)
+  if (!label || usedPercent === undefined) return undefined
+
+  return {
+    label,
+    usedPercent,
+    resetAt: asNumber(item.resetAt ?? item.reset_at),
+  }
+}
+
+function normalizeUsageProvider(raw: unknown): ProviderUsageSummary | undefined {
+  const item = asRecord(raw)
+  if (!item) return undefined
+
+  const provider = asString(item.provider)
+  if (!provider) return undefined
+
+  return {
+    provider,
+    displayName: asString(item.displayName) || provider,
+    windows: Array.isArray(item.windows)
+      ? (item.windows.map(normalizeUsageWindow).filter(Boolean) as ProviderUsageWindow[])
+      : [],
+    plan: asString(item.plan),
+    error: asString(item.error),
+  }
+}
+
+function normalizeSessionAgentName(item: GatewayFrame) {
+  const runtime = asRecord(item.agentRuntime)
+  const agent = asRecord(item.agent)
+
+  return (
+    asString(item.agentName) ||
+    asString(item.agent_name) ||
+    asString(runtime?.name) ||
+    asString(agent?.name)
+  )
+}
+
 function normalizeSession(raw: unknown): Session {
   const item = asRecord(raw) ?? {}
   const key =
@@ -603,12 +877,25 @@ function normalizeSession(raw: unknown): Session {
     asString(item.routeId) ||
     asString(item.route_id) ||
     slugify(key.split("/").pop())
-  const title =
-    asString(item.label) ||
-    asString(item.title) ||
+  const agentId = getAgentIdFromSessionKey(key)
+  const agentName = normalizeSessionAgentName(item)
+  const explicitTitle = asString(item.label) || asString(item.title)
+  const derivedTitle =
     asString(item.derivedTitle) ||
     asString(item.derived_title) ||
-    asString(item.lastMessage) ||
+    asString(item.lastMessage)
+  const normalizedExplicitTitle = explicitTitle?.trim().toLowerCase()
+  const shouldPreferDerivedTitle =
+    Boolean(derivedTitle) &&
+    Boolean(
+      normalizedExplicitTitle &&
+        (normalizedExplicitTitle === agentId?.trim().toLowerCase() ||
+          normalizedExplicitTitle === agentName?.trim().toLowerCase())
+    )
+  const title =
+    (shouldPreferDerivedTitle ? derivedTitle : undefined) ||
+    explicitTitle ||
+    derivedTitle ||
     friendlyId
 
   return {
@@ -617,8 +904,84 @@ function normalizeSession(raw: unknown): Session {
     friendlyId,
     title,
     pinned: false,
+    agentId,
+    agentName,
+    runtimeStatus: asString(item.status),
+    hasActiveRun: item.hasActiveRun === true,
+    model: asString(item.model),
+    modelProvider: asString(item.modelProvider),
+    thinkingLevel: asString(item.thinkingLevel),
+    thinkingLevels: Array.isArray(item.thinkingLevels)
+      ? item.thinkingLevels.map(normalizeThinkingLevelOption).filter(Boolean) as ThinkingLevelOption[]
+      : undefined,
+    thinkingOptions: normalizeThinkingOptions(item.thinkingOptions),
+    thinkingDefault: asString(item.thinkingDefault),
+    contextTokens: asNumber(item.contextTokens ?? item.context_tokens),
+    totalTokens: asNumber(item.totalTokens ?? item.total_tokens),
     updatedAt: normalizeTimestamp(item.updatedAt ?? item.updated_at ?? item.modifiedAt),
     lastMessage: asString(item.lastMessage) || asString(item.last_message),
+  }
+}
+
+function normalizeSessionDefaults(raw: unknown): SessionDefaults {
+  const item = asRecord(raw) ?? {}
+  return {
+    defaultAgentId: asString(item.defaultAgentId),
+    mainKey: asString(item.mainKey),
+    mainSessionKey: asString(item.mainSessionKey),
+    model: asString(item.model),
+    modelProvider: asString(item.modelProvider),
+    thinkingLevel: asString(item.thinkingLevel),
+    thinkingLevels: Array.isArray(item.thinkingLevels)
+      ? item.thinkingLevels.map(normalizeThinkingLevelOption).filter(Boolean) as ThinkingLevelOption[]
+      : undefined,
+    thinkingOptions: normalizeThinkingOptions(item.thinkingOptions),
+    thinkingDefault: asString(item.thinkingDefault),
+  }
+}
+
+function normalizeAgent(raw: unknown): Agent | undefined {
+  const item = asRecord(raw)
+  if (!item) return undefined
+
+  const id = asString(item.id)
+  if (!id) return undefined
+  const model = asRecord(item.model)
+
+  return {
+    id,
+    name: asString(item.name) || id,
+    description: asString(item.description),
+    model: model
+      ? {
+          primary: asString(model.primary),
+          fallbacks: Array.isArray(model.fallbacks)
+            ? model.fallbacks
+                .map((entry) => asString(entry))
+                .filter(Boolean) as string[]
+            : undefined,
+        }
+      : undefined,
+  }
+}
+
+function normalizeModel(raw: unknown): ModelOption | undefined {
+  const item = asRecord(raw)
+  if (!item) return undefined
+
+  const modelId = asString(item.id)
+  const provider = asString(item.provider)
+  const id =
+    modelId && provider && !modelId.includes("/") ? `${provider}/${modelId}` : modelId
+  if (!id) return undefined
+
+  return {
+    id,
+    name: asString(item.alias) || asString(item.name) || id,
+    provider,
+    isDefault: item.default === true || item.isDefault === true,
+    contextTokens: asNumber(item.contextTokens ?? item.context_tokens),
+    contextWindow: asNumber(item.contextWindow ?? item.context_window),
   }
 }
 
@@ -641,16 +1004,53 @@ function extractTextPart(part: GatewayFrame) {
   )
 }
 
+function getToolCallId(part: GatewayFrame) {
+  return (
+    asString(part.id) ||
+    asString(part.callId) ||
+    asString(part.toolCallId) ||
+    asString(part.toolUseId) ||
+    asString(part.tool_use_id)
+  )
+}
+
+function isToolCallPart(type: string | undefined) {
+  return (
+    type === "tool_call" ||
+    type === "tool-call" ||
+    type === "toolCall" ||
+    type === "tool"
+  )
+}
+
+function isToolResultPart(type: string | undefined) {
+  return type === "tool_result" || type === "tool-result" || type === "toolResult"
+}
+
 function normalizeToolCall(part: GatewayFrame, index: number): ToolCall {
   const result = asRecord(part.result)
-  const isError = part.error === true || result?.error === true || typeof part.error === "string"
+  const isError =
+    part.error === true ||
+    part.isError === true ||
+    result?.error === true ||
+    typeof part.error === "string"
+  const output =
+    asString(part.output) ||
+    asString(result?.text) ||
+    asString(result?.output) ||
+    extractTextPart(part)
+  const error =
+    typeof part.error === "string"
+      ? part.error
+      : asString(result?.error) || (isError ? output : undefined)
   return {
-    id: asString(part.id) || asString(part.callId) || `tool-${index}`,
-    name: asString(part.name) || asString(part.tool) || "tool",
+    id: getToolCallId(part) || `tool-${index}`,
+    name: asString(part.name) || asString(part.toolName) || asString(part.tool) || "tool",
     input: asRecord(part.input) || asRecord(part.arguments),
-    output: asString(part.output) || asString(result?.text) || asString(result?.output),
-    error: typeof part.error === "string" ? part.error : asString(result?.error),
-    status: isError ? "error" : result || part.output ? "success" : "pending",
+    output,
+    error,
+    status: isError ? "error" : output || result ? "success" : "pending",
+    rawCall: part,
   }
 }
 
@@ -658,7 +1058,8 @@ function normalizeMessage(raw: unknown, index: number): Message | undefined {
   const item = asRecord(raw)
   if (!item) return undefined
 
-  const role = asString(item.role) || asString(item.author) || "assistant"
+  const rawRole = asString(item.role) || asString(item.author) || "assistant"
+  const role = rawRole === "toolResult" ? "tool" : rawRole
   if (!["user", "assistant", "tool"].includes(role)) return undefined
 
   const parts = Array.isArray(item.parts)
@@ -677,7 +1078,7 @@ function normalizeMessage(raw: unknown, index: number): Message | undefined {
     const partType = asString(record.type) || asString(record.kind)
     if (partType === "thinking" || partType === "reasoning") {
       reasoningParts.push(extractTextPart(record))
-    } else if (partType === "tool_call" || partType === "tool-call" || partType === "tool") {
+    } else if (isToolCallPart(partType) || isToolResultPart(partType)) {
       toolCalls.push(normalizeToolCall(record, toolCalls.length))
     } else if (partType === "image" || String(partType).startsWith("image")) {
       const attachment = normalizeAttachment(record)
@@ -691,7 +1092,7 @@ function normalizeMessage(raw: unknown, index: number): Message | undefined {
   const content = asString(item.text) || asString(item.message) || asString(item.content) || textParts.join("\n\n")
   const rawAttachments = Array.isArray(item.attachments) ? item.attachments : []
 
-  return {
+  const message: Message = {
     id: asString(item.id) || asString(item.messageId) || `message-${index}`,
     role: role as Message["role"],
     content,
@@ -700,6 +1101,60 @@ function normalizeMessage(raw: unknown, index: number): Message | undefined {
     reasoning: reasoningParts.filter(Boolean).join("\n\n") || undefined,
     toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
   }
+
+  const hasVisibleContent = message.content.trim().length > 0
+  const hasVisibleAttachments = Boolean(message.attachments && message.attachments.length > 0)
+  const hasVisibleReasoning = Boolean(message.reasoning && message.reasoning.trim().length > 0)
+  const hasVisibleToolCalls = Boolean(message.toolCalls && message.toolCalls.length > 0)
+
+  if (
+    message.role !== "user" &&
+    !hasVisibleContent &&
+    !hasVisibleAttachments &&
+    !hasVisibleReasoning &&
+    !hasVisibleToolCalls
+  ) {
+    return undefined
+  }
+
+  return message
+}
+
+function mergeToolResultMessages(messages: Message[]) {
+  const merged: Message[] = []
+  const toolCallsById = new Map<string, ToolCall>()
+
+  for (const message of messages) {
+    if (message.role === "tool" && message.toolCalls && message.toolCalls.length > 0) {
+      let consumed = false
+
+      for (const result of message.toolCalls) {
+        const existing = toolCallsById.get(result.id)
+        if (!existing) continue
+
+        existing.output =
+          existing.output && result.output
+            ? `${existing.output}\n${result.output}`
+            : result.output || existing.output
+        existing.error = result.error || existing.error
+        existing.status = result.status
+        existing.rawResults = [...(existing.rawResults || []), result.rawCall].filter(Boolean)
+        consumed = true
+      }
+
+      if (consumed && message.content.trim().length === 0) {
+        continue
+      }
+    }
+
+    merged.push(message)
+
+    for (const toolCall of message.toolCalls || []) {
+      toolCallsById.set(toolCall.id, toolCall)
+    }
+  }
+
+  return merged
 }
 
 function listFromPayload(payload: unknown) {
@@ -708,10 +1163,250 @@ function listFromPayload(payload: unknown) {
   if (!record) return []
   return (
     (Array.isArray(record.sessions) && record.sessions) ||
+    (Array.isArray(record.agents) && record.agents) ||
     (Array.isArray(record.items) && record.items) ||
     (Array.isArray(record.messages) && record.messages) ||
     []
   )
+}
+
+function isSessionActivelyRunning(status?: string, hasActiveRun?: boolean) {
+  if (typeof hasActiveRun === "boolean") return hasActiveRun
+  return status === "running"
+}
+
+function isTerminalSessionStatus(status?: string) {
+  return ["done", "failed", "killed", "timeout"].includes(status || "")
+}
+
+function formatOperationLabel(operation?: string) {
+  if (!operation) return "Running"
+  if (operation === "compact") return "Compacting context"
+  return operation
+    .split(/[_\-\s]+/g)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ")
+}
+
+function deriveSessionActivity(params: {
+  sessionKey?: string
+  status?: string
+  hasActiveRun?: boolean
+  operation?: string
+  operationPhase?: string
+  toolName?: string
+  toolPhase?: string
+}): AgentActivity {
+  const {
+    sessionKey,
+    status,
+    hasActiveRun,
+    operation,
+    operationPhase,
+    toolName,
+    toolPhase,
+  } = params
+
+  if (toolName && toolPhase === "start") {
+    const formattedToolName = formatOperationLabel(toolName)
+    return {
+      kind: "tool",
+      label: `Running ${formattedToolName}`,
+      detail: toolName,
+      active: true,
+      sessionKey,
+      updatedAt: Date.now(),
+    }
+  }
+
+  if (operation && operationPhase === "start") {
+    return {
+      kind: "operation",
+      label: formatOperationLabel(operation),
+      detail: operation,
+      active: true,
+      sessionKey,
+      updatedAt: Date.now(),
+    }
+  }
+
+  if (isSessionActivelyRunning(status, hasActiveRun) && !isTerminalSessionStatus(status)) {
+    return {
+      kind: "thinking",
+      label: "Thinking",
+      active: true,
+      sessionKey,
+      updatedAt: Date.now(),
+    }
+  }
+
+  return {
+    kind: "idle",
+    label: "Idle",
+    active: false,
+    sessionKey,
+    updatedAt: Date.now(),
+  }
+}
+
+function getToolEventName(payload: GatewayFrame) {
+  const data = asRecord(payload.data)
+  return (
+    asString(data?.name) ||
+    asString(payload.name) ||
+    asString(payload.toolName) ||
+    asString(payload.tool)
+  )
+}
+
+function getToolEventPhase(payload: GatewayFrame) {
+  const data = asRecord(payload.data)
+  return asString(data?.phase) || asString(payload.phase) || asString(payload.status)
+}
+
+export async function getSessionActivitySnapshot(identifier: string): Promise<AgentActivity> {
+  const resolvedKey = await resolveSessionKey(identifier)
+  const { sessions } = await listSessions()
+  const session = sessions.find((item) => item.key === resolvedKey || item.id === identifier)
+
+  return deriveSessionActivity({
+    sessionKey: session?.key || resolvedKey,
+    status: session?.runtimeStatus,
+    hasActiveRun: session?.hasActiveRun,
+  })
+}
+
+export async function subscribeSessionActivity(
+  identifier: string,
+  callbacks: {
+    onActivity: (activity: AgentActivity) => void
+    onError?: (error: AppError) => void
+    signal?: AbortSignal
+  }
+) {
+  const resolvedKey = await resolveSessionKey(identifier)
+  const { sessions } = await listSessions().catch(() => ({ sessions: [] as Session[] }))
+  const initialSession = sessions.find(
+    (item) => item.key === resolvedKey || item.id === identifier
+  )
+  let lastKnownStatus = initialSession?.runtimeStatus
+  let lastKnownHasActiveRun = initialSession?.hasActiveRun
+  let lastActivity = deriveSessionActivity({
+    sessionKey: initialSession?.key || resolvedKey,
+    status: lastKnownStatus,
+    hasActiveRun: lastKnownHasActiveRun,
+  })
+
+  const emitIfChanged = (next: AgentActivity) => {
+    if (
+      next.kind === lastActivity.kind &&
+      next.label === lastActivity.label &&
+      next.active === lastActivity.active
+    ) {
+      return
+    }
+
+    lastActivity = next
+    callbacks.onActivity(next)
+  }
+
+  callbacks.onActivity(lastActivity)
+
+  const gateway = await openGateway({
+    onClose: (error) => {
+      if (!callbacks.signal?.aborted) callbacks.onError?.(error)
+    },
+    onEvent: (event, payload) => {
+      const eventSessionKey =
+        asString(payload.sessionKey) ||
+        asString(payload.key) ||
+        asString(asRecord(payload.session)?.key)
+      if (eventSessionKey !== resolvedKey) return
+
+      if (event === "sessions.changed") {
+        lastKnownStatus = asString(payload.status)
+        lastKnownHasActiveRun =
+          typeof payload.hasActiveRun === "boolean" ? payload.hasActiveRun : undefined
+        emitIfChanged(
+          deriveSessionActivity({
+            sessionKey: eventSessionKey,
+            status: lastKnownStatus,
+            hasActiveRun: lastKnownHasActiveRun,
+          })
+        )
+        return
+      }
+
+      if (event === "session.operation") {
+        const phase = asString(payload.phase)
+        const operation = asString(payload.operation)
+        if (phase === "start") {
+          emitIfChanged(
+            deriveSessionActivity({
+              sessionKey: eventSessionKey,
+              operation,
+              operationPhase: phase,
+            })
+          )
+        } else {
+          emitIfChanged(
+            deriveSessionActivity({
+              sessionKey: eventSessionKey,
+              status: lastKnownStatus,
+              hasActiveRun: lastKnownHasActiveRun,
+            })
+          )
+        }
+        return
+      }
+
+      if (event === "session.tool") {
+        const phase = getToolEventPhase(payload)
+        const toolName = getToolEventName(payload)
+        if (phase === "start" && toolName) {
+          emitIfChanged(
+            deriveSessionActivity({
+              sessionKey: eventSessionKey,
+              toolName,
+              toolPhase: phase,
+            })
+          )
+        } else {
+          emitIfChanged(
+            deriveSessionActivity({
+              sessionKey: eventSessionKey,
+              status: lastKnownStatus,
+              hasActiveRun: lastKnownHasActiveRun,
+            })
+          )
+        }
+      }
+    },
+  })
+
+  try {
+    await gateway.request("sessions.subscribe", {})
+
+    if (callbacks.signal?.aborted) {
+      gateway.close()
+      return
+    }
+
+    await new Promise<void>((resolve) => {
+      if (!callbacks.signal) return
+
+      const handleAbort = () => {
+        callbacks.signal?.removeEventListener("abort", handleAbort)
+        gateway.close()
+        resolve()
+      }
+
+      callbacks.signal.addEventListener("abort", handleAbort)
+    })
+  } finally {
+    gateway.close()
+  }
 }
 
 export async function pingGateway() {
@@ -732,12 +1427,46 @@ export async function listSessions() {
       includeLastMessage: true,
       includeDerivedTitles: true,
     })
+    const payloadRecord = asRecord(payload)
     const sessions = listFromPayload(payload).map(normalizeSession)
-    setSessionListCache(sessions)
-    return sessions
+    const result = {
+      sessions,
+      defaults: normalizeSessionDefaults(payloadRecord?.defaults),
+    }
+    setSessionListCache(result)
+    return result
   } catch (error) {
     if (cached) return cached.value
     throw error
+  }
+}
+
+export async function listAgents() {
+  const payload = await requestFirst(["agents.list"])
+  return listFromPayload(payload).map(normalizeAgent).filter(Boolean) as Agent[]
+}
+
+export async function listConfiguredModels() {
+  const payload = await requestFirst(["models.list"], { view: "all" })
+  const record = asRecord(payload)
+  const models = Array.isArray(record?.models)
+    ? record.models
+    : Array.isArray(record?.items)
+      ? record.items
+      : []
+  return models.map(normalizeModel).filter(Boolean) as ModelOption[]
+}
+
+export async function getUsageStatus(): Promise<UsageStatus> {
+  const payload = asRecord(await requestFirst(["usage.status"])) ?? {}
+
+  return {
+    updatedAt: asNumber(payload.updatedAt ?? payload.updated_at) ?? Date.now(),
+    providers: Array.isArray(payload.providers)
+      ? (payload.providers
+          .map(normalizeUsageProvider)
+          .filter(Boolean) as ProviderUsageSummary[])
+      : [],
   }
 }
 
@@ -758,8 +1487,9 @@ async function resolveSessionKey(identifier: string) {
   if (resolvedKey && resolvedKey !== identifier) return resolvedKey
 
   const sessions = await listSessions().catch(() => [])
+  const sessionRows = Array.isArray(sessions) ? sessions : sessions.sessions
   return (
-    sessions.find(
+    sessionRows.find(
       (session) =>
         session.id === identifier ||
         session.friendlyId === identifier ||
@@ -768,16 +1498,24 @@ async function resolveSessionKey(identifier: string) {
   )
 }
 
-export async function createSession(label?: string) {
+export async function createSession(label?: string, agentId?: string) {
   const friendlyId = `${slugify(label || "conversation")}-${Date.now().toString(36)}`
-  const payload = await requestFirst(["sessions.patch"], { label, key: friendlyId })
+  const payload = await requestFirst(["sessions.create"], {
+    label,
+    key: friendlyId,
+    agentId,
+  })
   await requestFirst(["sessions.resolve"], {
     key: friendlyId,
+    agentId,
     includeUnknown: true,
     includeGlobal: true,
   }).catch(() => undefined)
   invalidateSessionListCache()
-  return normalizeSession(asRecord(payload)?.session ?? payload ?? { key: friendlyId, friendlyId, label })
+  const session = normalizeSession(
+    asRecord(payload)?.session ?? payload ?? { key: friendlyId, friendlyId, label, agentId }
+  )
+  return { ...session, agentId: session.agentId || agentId }
 }
 
 export async function updateSession(identifier: string, label: string) {
@@ -785,6 +1523,25 @@ export async function updateSession(identifier: string, label: string) {
   const payload = await requestFirst(["sessions.patch"], { key: resolvedKey, label })
   invalidateSessionListCache()
   return normalizeSession(asRecord(payload)?.session ?? payload ?? { key: identifier, label })
+}
+
+export async function patchSession(
+  identifier: string,
+  patch: {
+    label?: string
+    model?: string
+    thinkingLevel?: string | null
+  }
+) {
+  const resolvedKey = await resolveSessionKey(identifier)
+  const payload = await requestFirst(["sessions.patch"], {
+    key: resolvedKey,
+    ...(patch.label !== undefined ? { label: patch.label } : {}),
+    ...(patch.model !== undefined ? { model: patch.model } : {}),
+    ...(patch.thinkingLevel !== undefined ? { thinkingLevel: patch.thinkingLevel } : {}),
+  })
+  invalidateSessionListCache()
+  return normalizeSession(asRecord(payload)?.session ?? payload ?? { key: identifier, ...patch })
 }
 
 export async function deleteSession(identifier: string) {
@@ -803,15 +1560,16 @@ export async function loadHistory(identifier?: string, limit = 200) {
     sessionKey: sessionKey || "main",
     limit,
   })
-  return listFromPayload(payload)
+  const messages = listFromPayload(payload)
     .map(normalizeMessage)
     .filter(Boolean) as Message[]
+
+  return mergeToolResultMessages(messages)
 }
 
 export async function sendMessage(params: {
   session?: string
   text?: string
-  thinkingLevel: "low" | "medium" | "high"
   attachments?: Attachment[]
   idempotencyKey: string
 }) {
@@ -820,7 +1578,6 @@ export async function sendMessage(params: {
   return requestFirst(["chat.send"], {
     sessionKey: sessionKey || "main",
     message: params.text,
-    thinking: params.thinkingLevel,
     attachments: params.attachments,
     deliver: true,
     timeoutMs: 120_000,
@@ -828,11 +1585,22 @@ export async function sendMessage(params: {
   })
 }
 
-export function toErrorResponse(error: unknown) {
+export function toErrorResponse(error: unknown, context: ErrorResponseContext = {}) {
   const appError =
     error instanceof AppError
       ? error
       : new AppError(error instanceof Error ? error.message : "Unexpected error")
+
+  if (appError.status === 503) {
+    console.error("[openclaw-api] 503 response", {
+      method: context.method,
+      path: context.path,
+      code: appError.code,
+      message: appError.message,
+      gatewayUrl: getGatewayUrl(),
+      stack: error instanceof Error ? error.stack : undefined,
+    })
+  }
 
   return Response.json(
     { error: appError.message, code: appError.code },

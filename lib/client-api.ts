@@ -1,6 +1,15 @@
 "use client"
 
-import type { Attachment, Message, Session, Settings } from "@/lib/types"
+import type {
+  Agent,
+  Attachment,
+  Message,
+  ModelOption,
+  Session,
+  SessionDefaults,
+  Settings,
+  UsageStatus,
+} from "@/lib/types"
 
 export interface ApiError extends Error {
   status?: number
@@ -56,6 +65,28 @@ function normalizeSession(session: Session): Session {
   }
 }
 
+function normalizeAgent(agent: Agent): Agent {
+  return {
+    ...agent,
+    id: agent.id || agent.name,
+    name: agent.name || agent.id,
+    model: agent.model
+      ? {
+          primary: agent.model.primary,
+          fallbacks: Array.isArray(agent.model.fallbacks) ? agent.model.fallbacks : undefined,
+        }
+      : undefined,
+  }
+}
+
+function normalizeModel(model: ModelOption): ModelOption {
+  return {
+    ...model,
+    id: model.id,
+    name: model.name || model.id,
+  }
+}
+
 function normalizeMessage(message: Message): Message {
   return {
     ...message,
@@ -68,14 +99,33 @@ export async function checkStatus() {
 }
 
 export async function fetchSessions() {
-  const payload = await apiFetch<{ sessions: Session[] }>("/api/openclaw/sessions")
-  return payload.sessions.map(normalizeSession)
+  const payload = await apiFetch<{ sessions: Session[]; defaults?: SessionDefaults }>(
+    "/api/openclaw/sessions"
+  )
+  return {
+    sessions: payload.sessions.map(normalizeSession),
+    defaults: payload.defaults || {},
+  }
 }
 
-export async function createSession(label?: string) {
+export async function fetchAgents() {
+  const payload = await apiFetch<{ agents: Agent[] }>("/api/openclaw/agents")
+  return payload.agents.map(normalizeAgent)
+}
+
+export async function fetchModels() {
+  const payload = await apiFetch<{ models: ModelOption[] }>("/api/openclaw/models")
+  return payload.models.map(normalizeModel)
+}
+
+export async function fetchUsageStatus() {
+  return apiFetch<UsageStatus>("/api/openclaw/usage")
+}
+
+export async function createSession(label?: string, agentId?: string) {
   const payload = await apiFetch<{ session: Session }>("/api/openclaw/sessions", {
     method: "POST",
-    body: JSON.stringify({ label }),
+    body: JSON.stringify({ label, agentId }),
   })
   return normalizeSession(payload.session)
 }
@@ -84,6 +134,20 @@ export async function renameSession(identifier: string, label: string) {
   const payload = await apiFetch<{ session: Session }>("/api/openclaw/sessions", {
     method: "PATCH",
     body: JSON.stringify({ identifier, label }),
+  })
+  return normalizeSession(payload.session)
+}
+
+export async function patchSessionPreferences(
+  identifier: string,
+  patch: {
+    model?: string
+    thinkingLevel?: string | null
+  }
+) {
+  const payload = await apiFetch<{ session: Session }>("/api/openclaw/sessions", {
+    method: "PATCH",
+    body: JSON.stringify({ identifier, ...patch }),
   })
   return normalizeSession(payload.session)
 }
@@ -106,7 +170,6 @@ export async function fetchHistory(sessionId: string) {
 export async function sendChatMessage(params: {
   sessionId: string
   text: string
-  thinkingLevel: Settings["thinkingLevel"]
   attachments: Attachment[]
 }) {
   return apiFetch<{ result: unknown }>("/api/openclaw/send", {
@@ -114,7 +177,6 @@ export async function sendChatMessage(params: {
     body: JSON.stringify({
       session: params.sessionId === NEW_CHAT_ID ? undefined : params.sessionId,
       text: params.text,
-      thinkingLevel: params.thinkingLevel,
       attachments: params.attachments,
       idempotencyKey: crypto.randomUUID(),
     }),
@@ -124,7 +186,26 @@ export async function sendChatMessage(params: {
 export function readJsonStorage<T>(key: string, fallback: T): T {
   try {
     const raw = localStorage.getItem(key)
-    return raw ? { ...fallback, ...JSON.parse(raw) } : fallback
+    if (!raw) return fallback
+
+    const parsed = JSON.parse(raw) as unknown
+
+    if (Array.isArray(fallback)) {
+      return (Array.isArray(parsed) ? parsed : fallback) as T
+    }
+
+    if (
+      fallback &&
+      typeof fallback === "object" &&
+      !Array.isArray(fallback) &&
+      parsed &&
+      typeof parsed === "object" &&
+      !Array.isArray(parsed)
+    ) {
+      return { ...fallback, ...parsed } as T
+    }
+
+    return (parsed ?? fallback) as T
   } catch {
     return fallback
   }

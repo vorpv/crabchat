@@ -143,6 +143,10 @@
 
 /* Custom Scrollbar */
 @layer utilities {
+  .font-rye {
+    font-family: var(--font-rye) !important;
+  }
+
   .custom-scrollbar {
     scrollbar-width: thin;
     scrollbar-color: var(--muted) transparent;

@@ -9,6 +9,9 @@ export async function GET(request: Request) {
     const limit = Number(url.searchParams.get("limit") || 200)
     return Response.json({ messages: await loadHistory(session, limit) })
   } catch (error) {
-    return toErrorResponse(error)
+    return toErrorResponse(error, {
+      method: request.method,
+      path: new URL(request.url).pathname,
+    })
   }
 }

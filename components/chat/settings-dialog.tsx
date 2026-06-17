@@ -6,11 +6,9 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
 import { CustomSwitch } from "@/components/ui/custom-switch"
 import { SegmentedControl } from "@/components/ui/segmented-control"
-import { X } from "lucide-react"
 import type { Settings } from "@/lib/types"
 
 interface SettingsDialogProps {
@@ -29,17 +27,10 @@ export function SettingsDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[85vh] w-full max-w-md overflow-hidden p-0">
-        <DialogHeader className="flex flex-row items-center justify-between border-b border-border px-4 py-3">
-          <DialogTitle className="text-base font-semibold">Settings</DialogTitle>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => onOpenChange(false)}
-            className="h-8 w-8 text-muted-foreground hover:bg-accent hover:text-foreground"
-          >
-            <X className="h-4 w-4" />
-            <span className="sr-only">Close</span>
-          </Button>
+        <DialogHeader className="border-b border-border px-4 py-3">
+          <DialogTitle className="font-rye text-lg font-normal tracking-wide">
+            Settings
+          </DialogTitle>
         </DialogHeader>
 
         <div className="overflow-y-auto px-4 py-4 custom-scrollbar">
@@ -83,42 +74,12 @@ export function SettingsDialog({
           <section className="space-y-3">
             <h3 className="text-sm font-medium text-foreground">Chat</h3>
             <div className="flex items-center justify-between py-1">
-              <span className="text-sm text-muted-foreground">Show tool messages</span>
+              <span className="text-sm text-muted-foreground">Display changes summary</span>
               <CustomSwitch
-                checked={settings.showToolMessages}
+                checked={settings.displayChangesSummary}
                 onCheckedChange={(checked) =>
-                  onSettingsChange({ ...settings, showToolMessages: checked })
+                  onSettingsChange({ ...settings, displayChangesSummary: checked })
                 }
-                size="sm"
-              />
-            </div>
-            <div className="flex items-center justify-between py-1">
-              <span className="text-sm text-muted-foreground">
-                Show reasoning blocks
-              </span>
-              <CustomSwitch
-                checked={settings.showReasoningBlocks}
-                onCheckedChange={(checked) =>
-                  onSettingsChange({ ...settings, showReasoningBlocks: checked })
-                }
-                size="sm"
-              />
-            </div>
-            <div className="flex items-center justify-between py-1">
-              <span className="text-sm text-muted-foreground">Thinking level</span>
-              <SegmentedControl
-                value={settings.thinkingLevel}
-                onValueChange={(value) =>
-                  onSettingsChange({
-                    ...settings,
-                    thinkingLevel: value as Settings["thinkingLevel"],
-                  })
-                }
-                options={[
-                  { value: "low", label: "Low" },
-                  { value: "medium", label: "Medium" },
-                  { value: "high", label: "High" },
-                ]}
                 size="sm"
               />
             </div>
@@ -135,11 +96,6 @@ export function SettingsDialog({
           </section>
         </div>
 
-        <div className="flex justify-end border-t border-border px-4 py-3">
-          <Button variant="secondary" onClick={() => onOpenChange(false)}>
-            Close
-          </Button>
-        </div>
       </DialogContent>
     </Dialog>
   )

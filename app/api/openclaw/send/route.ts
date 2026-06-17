@@ -18,13 +18,15 @@ export async function POST(request: Request) {
     const payload = await sendMessage({
       session: body.session,
       text,
-      thinkingLevel: body.thinkingLevel || "medium",
       attachments,
       idempotencyKey: body.idempotencyKey || crypto.randomUUID(),
     })
 
     return Response.json({ result: payload })
   } catch (error) {
-    return toErrorResponse(error)
+    return toErrorResponse(error, {
+      method: request.method,
+      path: new URL(request.url).pathname,
+    })
   }
 }

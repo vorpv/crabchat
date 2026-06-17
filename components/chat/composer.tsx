@@ -14,11 +14,21 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover"
-import { ImageIcon, SendHorizonal, X, FileIcon } from "lucide-react"
+import { ChevronDown, ChevronRight, FileIcon, ImageIcon, SendHorizonal, X } from "lucide-react"
+import type {
+  ModelOption,
+  ModelReasoningSelection,
+  ThinkingLevelOption,
+} from "@/lib/types"
 
 interface ChatComposerProps {
   onSend: (content: string, attachments?: SentAttachment[]) => void
   disabled: boolean
+  models: ModelOption[]
+  thinkingLevels: ThinkingLevelOption[]
+  selection: ModelReasoningSelection
+  onModelSelect: (modelId: string) => void
+  onReasoningSelect: (reasoningLevel: string) => void
 }
 
 interface AttachmentPreview {
@@ -40,10 +50,20 @@ const MAX_IMAGE_SIZE = 10 * 1024 * 1024
 const MAX_IMAGE_DIMENSION = 1280
 const TARGET_ENCODED_SIZE = 1_500_000
 
-export function ChatComposer({ onSend, disabled }: ChatComposerProps) {
+export function ChatComposer({
+  onSend,
+  disabled,
+  models,
+  thinkingLevels,
+  selection,
+  onModelSelect,
+  onReasoningSelect,
+}: ChatComposerProps) {
   const [content, setContent] = useState("")
   const [attachments, setAttachments] = useState<AttachmentPreview[]>([])
   const [hoveredAttachment, setHoveredAttachment] = useState<AttachmentPreview | null>(null)
+  const [modelPickerOpen, setModelPickerOpen] = useState(false)
+  const [expandedModelId, setExpandedModelId] = useState<string | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -53,6 +73,18 @@ export function ChatComposer({ onSend, disabled }: ChatComposerProps) {
       textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 200)}px`
     }
   }, [content])
+
+  useEffect(() => {
+    if (modelPickerOpen && selection.model) {
+      setExpandedModelId(selection.model)
+    }
+  }, [modelPickerOpen, selection.model])
+
+  useEffect(() => {
+    if (!modelPickerOpen) {
+      setExpandedModelId(null)
+    }
+  }, [modelPickerOpen])
 
   const handleSend = () => {
     if (disabled) return
@@ -115,8 +147,33 @@ export function ChatComposer({ onSend, disabled }: ChatComposerProps) {
   }
 
   const canSend =
+    Boolean(selection.model) &&
     (content.trim() || attachments.some((attachment) => !attachment.error && attachment.data)) &&
     !disabled
+  const selectedModel = models.find((model) => model.id === selection.model) ?? models[0]
+  const selectedThinkingLevel =
+    thinkingLevels.find((level) => level.id === selection.reasoningLevel)?.label ||
+    selection.reasoningLevel
+  const selectionLabel =
+    models.length === 0
+      ? "Loading models..."
+      : selectedModel
+        ? `${selectedModel.name} / ${selectedThinkingLevel}`
+        : "Select model / reasoning"
+
+  const handleModelClick = (model: ModelOption) => {
+    onModelSelect(model.id)
+    if (expandedModelId === model.id) {
+      setExpandedModelId(null)
+      return
+    }
+    setExpandedModelId(model.id)
+  }
+
+  const handleReasoningLevelSelect = (reasoningLevel: ModelReasoningSelection["reasoningLevel"]) => {
+    onReasoningSelect(reasoningLevel)
+    setModelPickerOpen(false)
+  }
 
   return (
     <TooltipProvider delay={0}>
@@ -222,6 +279,74 @@ export function ChatComposer({ onSend, disabled }: ChatComposerProps) {
               />
 
               <div className="flex items-center gap-1">
+                <Popover open={modelPickerOpen} onOpenChange={setModelPickerOpen}>
+                  <PopoverTrigger asChild>
+                    <button
+                    type="button"
+                      aria-label="Select model and reasoning"
+                      disabled={disabled || models.length === 0}
+                      className={cn(
+                        "inline-flex h-8 max-w-56 items-center gap-1 rounded-md px-2 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground",
+                        "disabled:cursor-not-allowed disabled:opacity-50"
+                      )}
+                    >
+                      <span className="truncate">{selectionLabel}</span>
+                      <ChevronDown className="h-3.5 w-3.5 shrink-0" />
+                    </button>
+                  </PopoverTrigger>
+                  <PopoverContent
+                    align="end"
+                    side="top"
+                    sideOffset={8}
+                    className="w-80 gap-1 p-1.5"
+                  >
+                    {models.map((model) => {
+                      const expanded = expandedModelId === model.id
+                      const selected = selection.model === model.id
+
+                      return (
+                        <div key={model.id} className="rounded-md">
+                          <button
+                            type="button"
+                            onClick={() => handleModelClick(model)}
+                            className={cn(
+                              "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent hover:text-accent-foreground",
+                              selected && "bg-accent/60 text-foreground"
+                            )}
+                          >
+                            {expanded ? (
+                              <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                            ) : (
+                              <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                            )}
+                            <span className="min-w-0 flex-1 truncate">{model.name}</span>
+                          </button>
+
+                          {expanded && (
+                            <div className="ml-5 mt-1 flex flex-col gap-0.5 border-l border-border pl-2">
+                              {thinkingLevels.map((level) => (
+                                <button
+                                  key={`${model.id}-${level.id}`}
+                                  type="button"
+                                  onClick={() => handleReasoningLevelSelect(level.id)}
+                                  className={cn(
+                                    "rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent hover:text-accent-foreground",
+                                    selection.model === model.id &&
+                                      selection.reasoningLevel === level.id &&
+                                      "bg-accent text-accent-foreground"
+                                  )}
+                                >
+                                  {level.label}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </PopoverContent>
+                </Popover>
+
                 <input
                   ref={fileInputRef}
                   type="file"

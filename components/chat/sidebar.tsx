@@ -1,7 +1,7 @@
 "use client"
 
+import { useMemo, useState } from "react"
 import { cn } from "@/lib/utils"
-import { Button } from "@/components/ui/button"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -10,6 +10,9 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import {
+  Bot,
+  ChevronDown,
+  ChevronRight,
   MessageSquare,
   PanelLeftClose,
   PanelLeft,
@@ -21,15 +24,16 @@ import {
   Pencil,
   Trash2,
 } from "lucide-react"
-import type { Session } from "@/lib/types"
+import type { Agent, Session } from "@/lib/types"
 
 interface ChatSidebarProps {
   expanded: boolean
   onToggleExpanded: () => void
+  agents: Agent[]
   sessions: Session[]
   activeSessionId: string
   onSelectSession: (id: string) => void
-  onNewSession: () => void
+  onNewSession: (agentId?: string) => void
   onOpenSearch: () => void
   onOpenSettings: () => void
   onPinSession: (id: string) => void
@@ -40,6 +44,7 @@ interface ChatSidebarProps {
 export function ChatSidebar({
   expanded,
   onToggleExpanded,
+  agents,
   sessions,
   activeSessionId,
   onSelectSession,
@@ -50,8 +55,49 @@ export function ChatSidebar({
   onRenameSession,
   onDeleteSession,
 }: ChatSidebarProps) {
-  const pinnedSessions = sessions.filter((s) => s.pinned)
-  const regularSessions = sessions.filter((s) => !s.pinned)
+  const [collapsedAgentIds, setCollapsedAgentIds] = useState<Set<string>>(new Set())
+
+  const agentGroups = useMemo(() => {
+    const knownAgents = new Map(agents.map((agent) => [agent.id, agent]))
+    const groups = new Map<
+      string,
+      { id: string; name: string; sessions: Session[] }
+    >()
+
+    for (const session of sessions) {
+      const id = session.agentId || "unknown"
+      const knownAgent = knownAgents.get(id)
+      const name = session.agentName || knownAgent?.name || "Unknown agent"
+
+      if (!groups.has(id)) {
+        groups.set(id, { id, name, sessions: [] })
+      }
+      groups.get(id)?.sessions.push(session)
+    }
+
+    return Array.from(groups.values()).sort((a, b) => {
+      if (a.id === "unknown") return 1
+      if (b.id === "unknown") return -1
+      return a.name.localeCompare(b.name)
+    })
+  }, [agents, sessions])
+
+  const flatSessions = useMemo(
+    () =>
+      sessions
+        .slice()
+        .sort((a, b) => Number(b.pinned) - Number(a.pinned)),
+    [sessions]
+  )
+
+  const toggleAgentGroup = (agentId: string) => {
+    setCollapsedAgentIds((current) => {
+      const next = new Set(current)
+      if (next.has(agentId)) next.delete(agentId)
+      else next.add(agentId)
+      return next
+    })
+  }
 
   return (
     <>
@@ -78,14 +124,12 @@ export function ChatSidebar({
         )}
       >
         {expanded && (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-8 gap-2 px-2 text-sm font-medium text-sidebar-foreground hover:bg-sidebar-accent"
-          >
-            <MessageSquare className="h-4 w-4" />
-            <span>Chat</span>
-          </Button>
+          <div className="flex h-8 items-center gap-2 px-2 text-sidebar-foreground">
+            <img src="/hat.svg" alt="" className="h-5 w-5 dark:invert" />
+            <span className="font-rye text-base tracking-wide">
+              Outclaw
+            </span>
+          </div>
         )}
         <button
           onClick={onToggleExpanded}
@@ -103,12 +147,10 @@ export function ChatSidebar({
 
       {/* Actions */}
       <div className={cn("flex flex-col gap-1 p-2", !expanded && "items-center")}>
-        <ActionButton
+        <NewSessionButton
           expanded={expanded}
-          icon={Plus}
-          label="New session"
-          shortcut="Shift Command O"
-          onClick={onNewSession}
+          agents={agents}
+          onNewSession={onNewSession}
         />
         <ActionButton
           expanded={expanded}
@@ -122,53 +164,65 @@ export function ChatSidebar({
       {/* Session List */}
       <ScrollArea className="flex-1 thin-scrollbar">
         <div className="px-2 pb-2">
-          {pinnedSessions.length > 0 && (
-            <div className="mb-2">
-              {expanded && (
-                <div className="mb-1 px-2 text-xs font-medium text-muted-foreground">
-                  Pinned
-                </div>
-              )}
-              <div className="flex flex-col gap-0.5">
-                {pinnedSessions.map((session) => (
-                  <SessionRow
-                    key={session.id}
-                    session={session}
-                    expanded={expanded}
-                    isActive={session.id === activeSessionId}
-                    onSelect={() => onSelectSession(session.id)}
-                    onPin={() => onPinSession(session.id)}
-                    onRename={() => onRenameSession(session)}
-                    onDelete={() => onDeleteSession(session)}
-                  />
-                ))}
-              </div>
+          {!expanded && (
+            <div className="flex flex-col items-center gap-0.5">
+              {flatSessions.map((session) => (
+                <SessionRow
+                  key={session.id}
+                  session={session}
+                  expanded={expanded}
+                  isActive={session.id === activeSessionId}
+                  onSelect={() => onSelectSession(session.id)}
+                  onPin={() => onPinSession(session.id)}
+                  onRename={() => onRenameSession(session)}
+                  onDelete={() => onDeleteSession(session)}
+                />
+              ))}
             </div>
           )}
 
-          {regularSessions.length > 0 && (
-            <div>
-              {expanded && pinnedSessions.length > 0 && (
-                <div className="mb-1 px-2 text-xs font-medium text-muted-foreground">
-                  Recent
+          {expanded &&
+            agentGroups.map((group) => {
+              const collapsed = collapsedAgentIds.has(group.id)
+              const groupSessions = group.sessions
+                .slice()
+                .sort((a, b) => Number(b.pinned) - Number(a.pinned))
+
+              return (
+                <div key={group.id} className="mb-2">
+                  <button
+                    type="button"
+                    onClick={() => toggleAgentGroup(group.id)}
+                    className="mb-1 flex h-7 w-full items-center gap-1 rounded-md px-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground"
+                  >
+                    {collapsed ? (
+                      <ChevronRight className="h-3.5 w-3.5" />
+                    ) : (
+                      <ChevronDown className="h-3.5 w-3.5" />
+                    )}
+                    <span className="min-w-0 flex-1 truncate text-left">{group.name}</span>
+                    <span className="tabular-nums">{group.sessions.length}</span>
+                  </button>
+
+                  {!collapsed && (
+                    <div className="flex flex-col gap-0.5">
+                      {groupSessions.map((session) => (
+                        <SessionRow
+                          key={session.id}
+                          session={session}
+                          expanded={expanded}
+                          isActive={session.id === activeSessionId}
+                          onSelect={() => onSelectSession(session.id)}
+                          onPin={() => onPinSession(session.id)}
+                          onRename={() => onRenameSession(session)}
+                          onDelete={() => onDeleteSession(session)}
+                        />
+                      ))}
+                    </div>
+                  )}
                 </div>
-              )}
-              <div className="flex flex-col gap-0.5">
-                {regularSessions.map((session) => (
-                  <SessionRow
-                    key={session.id}
-                    session={session}
-                    expanded={expanded}
-                    isActive={session.id === activeSessionId}
-                    onSelect={() => onSelectSession(session.id)}
-                    onPin={() => onPinSession(session.id)}
-                    onRename={() => onRenameSession(session)}
-                    onDelete={() => onDeleteSession(session)}
-                  />
-                ))}
-              </div>
-            </div>
-          )}
+              )
+            })}
 
           {sessions.length === 0 && expanded && (
             <div className="py-8 text-center text-sm text-muted-foreground">
@@ -194,6 +248,80 @@ export function ChatSidebar({
       </div>
       </aside>
     </>
+  )
+}
+
+interface NewSessionButtonProps {
+  expanded: boolean
+  agents: Agent[]
+  onNewSession: (agentId?: string) => void
+}
+
+function NewSessionButton({
+  expanded,
+  agents,
+  onNewSession,
+}: NewSessionButtonProps) {
+  const fallbackAgent = agents[0]
+
+  if (!expanded && agents.length <= 1) {
+    return (
+      <button
+        onClick={() => onNewSession(fallbackAgent?.id)}
+        aria-label="New session"
+        title="New session"
+        className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground"
+      >
+        <Plus className="h-4 w-4" />
+      </button>
+    )
+  }
+
+  if (agents.length === 0) {
+    return (
+      <ActionButton
+        expanded={expanded}
+        icon={Plus}
+        label="New session"
+        shortcut="Shift Command O"
+        onClick={() => onNewSession()}
+      />
+    )
+  }
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          aria-label="New session"
+          title="New session"
+          className={cn(
+            "group flex h-8 items-center gap-2 rounded-lg text-sm text-sidebar-foreground transition-colors hover:bg-sidebar-accent",
+            expanded
+              ? "w-full justify-start px-2"
+              : "w-8 justify-center text-muted-foreground hover:text-sidebar-foreground"
+          )}
+        >
+          <Plus className="h-4 w-4 shrink-0 text-muted-foreground" />
+          {expanded && (
+            <>
+              <span className="truncate">New session</span>
+              <span className="ml-auto text-xs text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100">
+                Shift Command O
+              </span>
+            </>
+          )}
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="w-56">
+        {agents.map((agent) => (
+          <DropdownMenuItem key={agent.id} onClick={() => onNewSession(agent.id)}>
+            <Bot className="mr-2 h-4 w-4" />
+            <span className="truncate">{agent.name}</span>
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 

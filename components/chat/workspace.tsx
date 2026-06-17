@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import hljs from "highlight.js/lib/core"
 import bash from "highlight.js/lib/languages/bash"
 import { ChatSidebar } from "@/components/chat/sidebar"
@@ -16,28 +16,47 @@ import {
   checkStatus,
   createSession,
   exportConversation,
+  fetchAgents,
   fetchHistory,
+  fetchModels,
   fetchSessions,
+  fetchUsageStatus,
   isMissingAuth,
   NEW_CHAT_ID,
+  patchSessionPreferences,
   readJsonStorage,
   removeSession,
   renameSession,
   sendChatMessage,
   writeJsonStorage,
 } from "@/lib/client-api"
-import type { Attachment, Message, Session, Settings } from "@/lib/types"
+import type {
+  Agent,
+  AgentActivity,
+  Attachment,
+  ContextWindowStatus,
+  Message,
+  ModelOption,
+  ModelReasoningSelection,
+  ProviderUsageSummary,
+  Session,
+  SessionDefaults,
+  Settings,
+  ThinkingLevelOption,
+  UsageStatus,
+} from "@/lib/types"
 
 hljs.registerLanguage("bash", bash)
 
 const SETTINGS_KEY = "openclaw-chat-settings"
 const PINNED_KEY = "openclaw-pinned-sessions"
+const MODEL_SELECTION_KEY = "openclaw-model-selection"
+const RESPONSE_POLL_INTERVAL_MS = 1_200
+const RESPONSE_POLL_TIMEOUT_MS = 120_000
 
 const defaultSettings: Settings = {
   theme: "system",
-  showToolMessages: true,
-  showReasoningBlocks: false,
-  thinkingLevel: "medium",
+  displayChangesSummary: true,
 }
 
 interface SentAttachment {
@@ -47,15 +66,198 @@ interface SentAttachment {
   type: string
 }
 
+function getSessionModelId(session: Session) {
+  if (!session.model) return ""
+  if (session.model.includes("/")) return session.model
+  if (session.modelProvider) return `${session.modelProvider}/${session.model}`
+  return session.model
+}
+
+function getDefaultsModelId(defaults: SessionDefaults) {
+  if (!defaults.model) return ""
+  if (defaults.model.includes("/")) return defaults.model
+  if (defaults.modelProvider) return `${defaults.modelProvider}/${defaults.model}`
+  return defaults.model
+}
+
+function getModelContextCapacity(model?: ModelOption) {
+  return model?.contextTokens || model?.contextWindow
+}
+
+function normalizeProviderId(value?: string) {
+  return value?.trim().toLowerCase() || ""
+}
+
+function normalizeModelRef(value?: string) {
+  return value?.trim().toLowerCase() || ""
+}
+
+function getModelLeafId(model: ModelOption) {
+  const normalizedId = normalizeModelRef(model.id)
+  return normalizedId.includes("/") ? normalizedId.split("/").slice(1).join("/") : normalizedId
+}
+
+function hasEquivalentVisibleModel(target: ModelOption, models: ModelOption[]) {
+  const targetId = normalizeModelRef(target.id)
+  const targetLeafId = getModelLeafId(target)
+  const targetName = target.name.trim().toLowerCase()
+
+  return models.some((model) => {
+    const modelId = normalizeModelRef(model.id)
+    if (modelId === targetId) return true
+    if (getModelLeafId(model) === targetLeafId) return true
+    return model.name.trim().toLowerCase() === targetName
+  })
+}
+
+function dedupeModelsById(models: ModelOption[]) {
+  const seen = new Set<string>()
+  return models.filter((model) => {
+    const key = normalizeModelRef(model.id)
+    if (!key || seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+function buildModelOptionFromRef(ref: string): ModelOption | undefined {
+  const normalized = ref.trim()
+  if (!normalized) return undefined
+
+  const [provider, ...modelParts] = normalized.split("/")
+  const modelId = modelParts.join("/")
+  if (!provider || !modelId) {
+    return {
+      id: normalized,
+      name: normalized,
+    }
+  }
+
+  return {
+    id: `${provider}/${modelId}`,
+    name: modelId,
+    provider,
+  }
+}
+
+function resolveConfiguredAgentModels(agent: Agent | undefined, models: ModelOption[]) {
+  if (!agent?.model) return models
+
+  const configuredRefs = [
+    agent.model.primary,
+    ...(agent.model.fallbacks || []),
+  ]
+    .map((entry) => normalizeModelRef(entry))
+    .filter(Boolean)
+
+  if (configuredRefs.length === 0) return models
+
+  const filtered = models.filter((model) => {
+    const modelId = normalizeModelRef(model.id)
+    const suffix = modelId.includes("/") ? modelId.split("/").slice(1).join("/") : modelId
+    return configuredRefs.some((configuredRef) => {
+      if (configuredRef === modelId) return true
+      if (!configuredRef.includes("/") && configuredRef === suffix) return true
+      return false
+    })
+  })
+
+  if (filtered.length > 0) return filtered
+
+  const fallbackModels = configuredRefs
+    .map((configuredRef) => buildModelOptionFromRef(configuredRef))
+    .filter(Boolean) as ModelOption[]
+
+  return fallbackModels.length > 0 ? fallbackModels : models
+}
+
+function getThinkingLevels(
+  session: Pick<
+    Session | SessionDefaults,
+    "model" | "modelProvider" | "thinkingLevels" | "thinkingOptions"
+  >,
+  defaults: SessionDefaults
+) {
+  if (session.thinkingLevels?.length) return session.thinkingLevels
+
+  const sessionModelId =
+    session.model && session.modelProvider && !session.model.includes("/")
+      ? `${session.modelProvider}/${session.model}`
+      : session.model || ""
+  const defaultsModelId = getDefaultsModelId(defaults)
+  const sameModel = !sessionModelId || sessionModelId === defaultsModelId
+
+  if (sameModel && defaults.thinkingLevels?.length) {
+    return defaults.thinkingLevels
+  }
+
+  const thinkingOptions =
+    session.thinkingOptions ||
+    (sameModel ? defaults.thinkingOptions : undefined) ||
+    []
+
+  return thinkingOptions.map((option) => ({
+    id: option,
+    label: option,
+  }))
+}
+
+function getPreferredThinkingLevel(
+  levels: ThinkingLevelOption[],
+  session: Pick<Session | SessionDefaults, "thinkingLevel" | "thinkingDefault">
+) {
+  if (session.thinkingLevel && levels.some((level) => level.id === session.thinkingLevel)) {
+    return session.thinkingLevel
+  }
+  if (session.thinkingDefault && levels.some((level) => level.id === session.thinkingDefault)) {
+    return session.thinkingDefault
+  }
+  return levels[0]?.id || "medium"
+}
+
+function mergeSessionUpdate(current: Session, updated: Session): Session {
+  return {
+    ...current,
+    ...updated,
+    agentId: updated.agentId || current.agentId,
+    agentName: updated.agentName || current.agentName,
+  }
+}
+
+function getTransientAgentActivity(
+  current: AgentActivity | null,
+  isResponding: boolean
+): AgentActivity | null {
+  if (current?.active) return current
+  if (!isResponding) return null
+
+  return {
+    kind: "thinking",
+    label: "Thinking",
+    active: true,
+    updatedAt: Date.now(),
+  }
+}
+
 export function ChatWorkspace() {
   const [sidebarExpanded, setSidebarExpanded] = useState(true)
+  const [agents, setAgents] = useState<Agent[]>([])
+  const [models, setModels] = useState<ModelOption[]>([])
+  const [usageStatus, setUsageStatus] = useState<UsageStatus | null>(null)
+  const [modelSelection, setModelSelection] = useState<ModelReasoningSelection>({
+    model: "",
+    reasoningLevel: "medium",
+  })
+  const [newSessionAgentId, setNewSessionAgentId] = useState<string | undefined>()
   const [sessions, setSessions] = useState<Session[]>([])
+  const [sessionDefaults, setSessionDefaults] = useState<SessionDefaults>({})
   const [activeSessionId, setActiveSessionId] = useState(NEW_CHAT_ID)
   const [historyCache, setHistoryCache] = useState<Record<string, Message[]>>({
     [NEW_CHAT_ID]: [],
   })
   const [pinnedIds, setPinnedIds] = useState<Set<string>>(new Set())
   const [isResponding, setIsResponding] = useState(false)
+  const [agentActivity, setAgentActivity] = useState<AgentActivity | null>(null)
   const [statusError, setStatusError] = useState<string | null>(null)
   const [retryingStatus, setRetryingStatus] = useState(false)
   const [setupRequired, setSetupRequired] = useState(false)
@@ -68,10 +270,91 @@ export function ChatWorkspace() {
   const [sessionToModify, setSessionToModify] = useState<Session | null>(null)
 
   const [settings, setSettings] = useState<Settings>(defaultSettings)
+  const pendingSessionPatchRef = useRef(new Map<string, Promise<Session>>())
 
   const activeSession = sessions.find((session) => session.id === activeSessionId)
+  const activeThinkingLevels = useMemo(() => {
+    if (activeSessionId === NEW_CHAT_ID) {
+      const selectedAgentId =
+        newSessionAgentId || sessionDefaults.defaultAgentId || agents[0]?.id
+      const mainSession =
+        sessions.find((session) => session.key === `agent:${selectedAgentId}:main`) ||
+        sessions.find((session) => session.agentId === selectedAgentId && session.key?.endsWith(":main"))
+      return getThinkingLevels(mainSession ?? sessionDefaults, sessionDefaults)
+    }
+
+    return activeSession ? getThinkingLevels(activeSession, sessionDefaults) : []
+  }, [activeSession, activeSessionId, agents, newSessionAgentId, sessionDefaults, sessions])
   const activeMessages = historyCache[activeSessionId] ?? []
-  const contextUsage = 0
+  const visibleAgentActivity = useMemo(
+    () => getTransientAgentActivity(agentActivity, isResponding),
+    [agentActivity, isResponding]
+  )
+  const selectedAgentForModels = useMemo(() => {
+    const targetAgentId =
+      activeSessionId === NEW_CHAT_ID
+        ? newSessionAgentId || sessionDefaults.defaultAgentId
+        : activeSession?.agentId
+
+    return agents.find((agent) => agent.id === targetAgentId)
+  }, [activeSession?.agentId, activeSessionId, agents, newSessionAgentId, sessionDefaults.defaultAgentId])
+  const visibleModels = useMemo(
+    () => dedupeModelsById(resolveConfiguredAgentModels(selectedAgentForModels, models)),
+    [models, selectedAgentForModels]
+  )
+  const composerModels = useMemo(() => {
+    const currentModel = models.find((model) => model.id === modelSelection.model)
+    if (!currentModel || hasEquivalentVisibleModel(currentModel, visibleModels)) {
+      return visibleModels
+    }
+    return [currentModel, ...visibleModels]
+  }, [modelSelection.model, models, visibleModels])
+  const activeModelId = useMemo(() => {
+    if (activeSessionId === NEW_CHAT_ID) {
+      return modelSelection.model || getDefaultsModelId(sessionDefaults)
+    }
+
+    return activeSession ? getSessionModelId(activeSession) || getDefaultsModelId(sessionDefaults) : ""
+  }, [activeSession, activeSessionId, modelSelection.model, sessionDefaults])
+  const activeModel = useMemo(
+    () => visibleModels.find((model) => model.id === activeModelId) || models.find((model) => model.id === activeModelId),
+    [activeModelId, models, visibleModels]
+  )
+  const activeProviderId =
+    activeModel?.provider ||
+    activeSession?.modelProvider ||
+    sessionDefaults.modelProvider ||
+    (activeModelId.includes("/") ? activeModelId.split("/")[0] : "")
+  const activeUsageSummary = useMemo<ProviderUsageSummary | null>(() => {
+    if (!usageStatus?.providers.length) return null
+
+    const normalizedProviderId = normalizeProviderId(activeProviderId)
+    if (normalizedProviderId) {
+      const providerMatch = usageStatus.providers.find(
+        (provider) => normalizeProviderId(provider.provider) === normalizedProviderId
+      )
+      if (providerMatch) return providerMatch
+    }
+
+    const preferred = usageStatus.providers.find((provider) =>
+      provider.windows.some((window) => /^5h$/i.test(window.label) || /^week$/i.test(window.label))
+    )
+    return preferred || usageStatus.providers[0] || null
+  }, [activeProviderId, usageStatus])
+  const contextWindow = useMemo<ContextWindowStatus>(() => {
+    const usedTokens = activeSession?.contextTokens || 0
+    const capacityTokens = getModelContextCapacity(activeModel)
+    const usagePercent = capacityTokens
+      ? Math.min(100, Math.max(0, Math.round((usedTokens / capacityTokens) * 100)))
+      : 0
+
+    return {
+      usedTokens,
+      totalTokens: activeSession?.totalTokens,
+      capacityTokens,
+      usagePercent,
+    }
+  }, [activeModel, activeSession])
 
   const sessionsWithPins = useMemo(
     () =>
@@ -101,20 +384,54 @@ export function ChatWorkspace() {
   const loadSessionList = useCallback(async () => {
     setLoadingSessions(true)
     try {
-      const loadedSessions = await fetchSessions()
+      const { sessions: loadedSessions, defaults } = await fetchSessions()
       setSessions(loadedSessions)
+      setSessionDefaults(defaults)
       setSetupRequired(false)
 
       const urlSession = new URLSearchParams(window.location.search).get("session")
       const nextSession = urlSession || loadedSessions[0]?.id || NEW_CHAT_ID
       setActiveSessionId(nextSession)
+      setLoadingSessions(false)
+
+      void Promise.allSettled([fetchAgents(), fetchModels(), fetchUsageStatus()]).then((results) => {
+        const [agentsResult, modelsResult, usageResult] = results
+
+        if (agentsResult.status === "fulfilled") {
+          setAgents(agentsResult.value)
+          setNewSessionAgentId(
+            (current) => current || defaults.defaultAgentId || agentsResult.value[0]?.id
+          )
+        }
+
+        if (modelsResult.status === "fulfilled") {
+          setModels(modelsResult.value)
+          setModelSelection((current) => {
+            const storedModel = current.model || getDefaultsModelId(defaults)
+            const matchingModel =
+              modelsResult.value.find((model) => model.id === storedModel) ??
+              modelsResult.value.find((model) => model.id === getDefaultsModelId(defaults)) ??
+              modelsResult.value[0]
+            const levels = getThinkingLevels(defaults, defaults)
+            return {
+              model: matchingModel?.id || "",
+              reasoningLevel:
+                levels.find((level) => level.id === current.reasoningLevel)?.id ||
+                getPreferredThinkingLevel(levels, defaults),
+            }
+          })
+        }
+
+        if (usageResult.status === "fulfilled") {
+          setUsageStatus(usageResult.value)
+        }
+      })
     } catch (error) {
       if (isMissingAuth(error)) {
         applyMissingAuth()
       } else {
         setStatusError(error instanceof Error ? error.message : "Could not load sessions")
       }
-    } finally {
       setLoadingSessions(false)
     }
   }, [applyMissingAuth])
@@ -156,9 +473,69 @@ export function ChatWorkspace() {
     [applyMissingAuth, navigateToSession, sessions]
   )
 
+  const waitForPendingSessionPatch = useCallback(async (sessionId: string) => {
+    const pending = pendingSessionPatchRef.current.get(sessionId)
+    if (pending) {
+      await pending
+    }
+  }, [])
+
+  const queueSessionPreferencePatch = useCallback(
+    (
+      session: Session,
+      patch: {
+        model?: string
+        thinkingLevel?: string | null
+      }
+    ) => {
+      const identifier = session.key || session.id
+      const previous = pendingSessionPatchRef.current.get(session.id)
+      const next = (previous ?? Promise.resolve(session))
+        .catch(() => session)
+        .then(() =>
+          patchSessionPreferences(identifier, patch)
+        )
+
+      pendingSessionPatchRef.current.set(session.id, next)
+
+      void next
+        .then((updated) => {
+          setSessions((current) =>
+            current.map((item) =>
+              item.id === session.id ? mergeSessionUpdate(item, updated) : item
+            )
+          )
+        })
+        .catch(async (error) => {
+          if (isMissingAuth(error)) {
+            applyMissingAuth()
+          } else {
+            setStatusError(
+              error instanceof Error ? error.message : "Could not update session preferences"
+            )
+            await loadSessionList()
+          }
+        })
+        .finally(() => {
+          if (pendingSessionPatchRef.current.get(session.id) === next) {
+            pendingSessionPatchRef.current.delete(session.id)
+          }
+        })
+
+      return next
+    },
+    [applyMissingAuth, loadSessionList]
+  )
+
   useEffect(() => {
-    setSettings(readJsonStorage(SETTINGS_KEY, defaultSettings))
+    setSettings({ ...defaultSettings, ...readJsonStorage(SETTINGS_KEY, defaultSettings) })
     setPinnedIds(new Set(readJsonStorage<string[]>(PINNED_KEY, [])))
+    setModelSelection(
+      readJsonStorage<ModelReasoningSelection>(MODEL_SELECTION_KEY, {
+        model: "",
+        reasoningLevel: "medium",
+      })
+    )
   }, [])
 
   useEffect(() => {
@@ -190,6 +567,10 @@ export function ChatWorkspace() {
   }, [settings])
 
   useEffect(() => {
+    writeJsonStorage(MODEL_SELECTION_KEY, modelSelection)
+  }, [modelSelection])
+
+  useEffect(() => {
     loadSessionList()
   }, [loadSessionList])
 
@@ -198,15 +579,93 @@ export function ChatWorkspace() {
   }, [activeSessionId, loadActiveHistory])
 
   useEffect(() => {
-    if (!isResponding || activeSessionId === NEW_CHAT_ID) return
+    if (activeSessionId === NEW_CHAT_ID) {
+      setAgentActivity(null)
+      return
+    }
 
-    const timeout = setTimeout(async () => {
-      await loadActiveHistory(activeSessionId)
-      setIsResponding(false)
-    }, 120_000)
+    const sessionIdentifier = activeSession?.key || activeSession?.id || activeSessionId
+    if (!sessionIdentifier) {
+      setAgentActivity(null)
+      return
+    }
 
-    return () => clearTimeout(timeout)
-  }, [activeSessionId, isResponding, loadActiveHistory])
+    setAgentActivity(
+      activeSession?.hasActiveRun || activeSession?.runtimeStatus === "running"
+        ? {
+            kind: "thinking",
+            label: "Thinking",
+            active: true,
+            sessionKey: activeSession?.key,
+            updatedAt: Date.now(),
+          }
+        : null
+    )
+
+    const source = new EventSource(
+      `/api/openclaw/session-status?${new URLSearchParams({
+        session: sessionIdentifier,
+      }).toString()}`
+    )
+
+    const handleStatus = (event: MessageEvent<string>) => {
+      try {
+        const payload = JSON.parse(event.data) as AgentActivity
+        setAgentActivity(payload.active ? payload : null)
+      } catch {
+        setAgentActivity(null)
+      }
+    }
+
+    source.addEventListener("status", handleStatus)
+    source.addEventListener("error", () => {
+      setAgentActivity((current) => current)
+    })
+
+    return () => {
+      source.removeEventListener("status", handleStatus)
+      source.close()
+    }
+  }, [activeSession?.id, activeSession?.key, activeSessionId])
+
+  useEffect(() => {
+    if (activeSessionId === NEW_CHAT_ID) return
+    const session = sessions.find((item) => item.id === activeSessionId)
+    if (!session) return
+
+    const sessionModelId = getSessionModelId(session)
+    const thinkingLevels = getThinkingLevels(session, sessionDefaults)
+    const nextModelId = sessionModelId || getDefaultsModelId(sessionDefaults)
+    if (!nextModelId) return
+
+    setModelSelection((current) => {
+      const reasoningLevel = getPreferredThinkingLevel(thinkingLevels, session)
+
+      if (current.model === nextModelId && current.reasoningLevel === reasoningLevel) {
+        return current
+      }
+
+      return {
+        model: nextModelId,
+        reasoningLevel,
+      }
+    })
+  }, [activeSessionId, sessionDefaults, sessions])
+
+  useEffect(() => {
+    if (activeSessionId !== NEW_CHAT_ID || visibleModels.length === 0) return
+
+    setModelSelection((current) => {
+      if (visibleModels.some((model) => model.id === current.model)) {
+        return current
+      }
+
+      return {
+        ...current,
+        model: visibleModels[0]?.id || current.model,
+      }
+    })
+  }, [activeSessionId, visibleModels])
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -225,7 +684,8 @@ export function ChatWorkspace() {
     return () => window.removeEventListener("keydown", handleKeyDown)
   })
 
-  const handleNewSession = () => {
+  const handleNewSession = (agentId?: string) => {
+    setNewSessionAgentId(agentId || agents[0]?.id)
     setHistoryCache((cache) => ({ ...cache, [NEW_CHAT_ID]: [] }))
     setIsResponding(false)
     navigateToSession(NEW_CHAT_ID)
@@ -261,6 +721,56 @@ export function ChatWorkspace() {
     setSessionToModify(session)
     setDeleteDialogOpen(true)
   }
+
+  const handleModelSelect = useCallback(
+    (modelId: string) => {
+      setModelSelection((current) => ({ ...current, model: modelId }))
+
+      if (activeSessionId === NEW_CHAT_ID) return
+
+      const session = sessions.find((item) => item.id === activeSessionId)
+      if (!session || getSessionModelId(session) === modelId) return
+
+      setSessions((current) =>
+        current.map((item) =>
+          item.id === session.id
+            ? {
+                ...item,
+                model: modelId,
+              }
+            : item
+        )
+      )
+
+      void queueSessionPreferencePatch(session, { model: modelId })
+    },
+    [activeSessionId, queueSessionPreferencePatch, sessions]
+  )
+
+  const handleReasoningSelect = useCallback(
+    (reasoningLevel: string) => {
+      setModelSelection((current) => ({ ...current, reasoningLevel }))
+
+      if (activeSessionId === NEW_CHAT_ID) return
+
+      const session = sessions.find((item) => item.id === activeSessionId)
+      if (!session) return
+
+      setSessions((current) =>
+        current.map((item) =>
+          item.id === session.id
+            ? {
+                ...item,
+                thinkingLevel: reasoningLevel,
+              }
+            : item
+        )
+      )
+
+      void queueSessionPreferencePatch(session, { thinkingLevel: reasoningLevel })
+    },
+    [activeSessionId, queueSessionPreferencePatch, sessions]
+  )
 
   const handleConfirmRename = async (newTitle: string) => {
     if (!sessionToModify) return
@@ -334,6 +844,11 @@ export function ChatWorkspace() {
     }
 
     const optimisticSessionId = activeSessionId
+    const existingAssistantIds = new Set(
+      (historyCache[optimisticSessionId] ?? [])
+        .filter((message) => message.role === "assistant")
+        .map((message) => message.id)
+    )
     setHistoryCache((cache) => ({
       ...cache,
       [optimisticSessionId]: [...(cache[optimisticSessionId] ?? []), optimisticMessage],
@@ -342,10 +857,22 @@ export function ChatWorkspace() {
 
     try {
       let sessionId = optimisticSessionId
-      let gatewaySessionId =
-        sessions.find((session) => session.id === sessionId)?.key || sessionId
+      const selectedSelection = modelSelection
+      const existingSession = sessions.find((session) => session.id === sessionId)
+      const selectedAgentId =
+        sessionId === NEW_CHAT_ID ? newSessionAgentId || agents[0]?.id : existingSession?.agentId
+      let gatewaySessionId = existingSession?.key || sessionId
       if (sessionId === NEW_CHAT_ID) {
-        const created = await createSession(trimmedContent.slice(0, 80) || undefined)
+        const createdSession = await createSession(
+          trimmedContent.slice(0, 80) || undefined,
+          selectedAgentId
+        )
+        const selectedAgent = agents.find((agent) => agent.id === selectedAgentId)
+        const created = {
+          ...createdSession,
+          agentId: createdSession.agentId || selectedAgentId,
+          agentName: createdSession.agentName || selectedAgent?.name,
+        }
         setSessions((current) => [created, ...current])
         setHistoryCache((cache) => ({
           ...cache,
@@ -354,7 +881,27 @@ export function ChatWorkspace() {
         }))
         sessionId = created.id
         gatewaySessionId = created.key || created.id
+        setNewSessionAgentId(selectedAgentId)
         navigateToSession(created.id)
+
+        const patchedSession = await patchSessionPreferences(gatewaySessionId, {
+          model: selectedSelection.model || undefined,
+          thinkingLevel: selectedSelection.reasoningLevel || undefined,
+        })
+        const hydratedSession = {
+          ...created,
+          ...patchedSession,
+          agentId: patchedSession.agentId || created.agentId,
+          agentName: patchedSession.agentName || created.agentName,
+        }
+        setSessions((current) =>
+          current.map((session) =>
+            session.id === created.id ? hydratedSession : session
+          )
+        )
+        gatewaySessionId = hydratedSession.key || gatewaySessionId
+      } else {
+        await waitForPendingSessionPatch(sessionId)
       }
 
       setSessions((current) =>
@@ -368,7 +915,6 @@ export function ChatWorkspace() {
       await sendChatMessage({
         sessionId: gatewaySessionId,
         text: trimmedContent,
-        thinkingLevel: settings.thinkingLevel,
         attachments: validAttachments,
       })
 
@@ -379,10 +925,21 @@ export function ChatWorkspace() {
         ),
       }))
 
-      setTimeout(async () => {
-        await loadActiveHistory(sessionId)
-        setIsResponding(false)
-      }, 1200)
+      const pollDeadline = Date.now() + RESPONSE_POLL_TIMEOUT_MS
+      while (Date.now() < pollDeadline) {
+        await new Promise((resolve) => setTimeout(resolve, RESPONSE_POLL_INTERVAL_MS))
+
+        const messages = await fetchHistory(gatewaySessionId)
+        setHistoryCache((cache) => ({ ...cache, [sessionId]: messages }))
+
+        const hasNewAssistantMessage = messages.some(
+          (message) =>
+            message.role === "assistant" && !existingAssistantIds.has(message.id)
+        )
+        if (hasNewAssistantMessage) break
+      }
+
+      setIsResponding(false)
     } catch (error) {
       if (isMissingAuth(error)) {
         applyMissingAuth()
@@ -418,6 +975,7 @@ export function ChatWorkspace() {
         <ChatSidebar
           expanded={sidebarExpanded}
           onToggleExpanded={() => setSidebarExpanded(!sidebarExpanded)}
+          agents={agents}
           sessions={sessionsWithPins}
           activeSessionId={activeSessionId}
           onSelectSession={handleSelectSession}
@@ -435,7 +993,9 @@ export function ChatWorkspace() {
               activeSession?.title ??
               (loadingSessions ? "Loading sessions" : "New conversation")
             }
-            contextUsage={contextUsage}
+            contextWindow={contextWindow}
+            usageSummary={activeUsageSummary}
+            agentActivity={visibleAgentActivity}
             onOpenSidebar={() => setSidebarExpanded(true)}
             sidebarExpanded={sidebarExpanded}
             onExport={(format) =>
@@ -450,14 +1010,22 @@ export function ChatWorkspace() {
           <ChatTranscript
             messages={activeMessages}
             isResponding={isResponding}
-            showReasoningBlocks={settings.showReasoningBlocks}
-            showToolMessages={settings.showToolMessages}
+            agentActivity={visibleAgentActivity}
+            displayChangesSummary={settings.displayChangesSummary}
             gatewayError={statusError}
             onRetryGateway={refreshStatus}
             retryingGateway={retryingStatus}
           />
 
-          <ChatComposer onSend={handleSendMessage} disabled={isResponding || setupRequired} />
+          <ChatComposer
+            onSend={handleSendMessage}
+            disabled={isResponding || setupRequired}
+            models={composerModels}
+            thinkingLevels={activeThinkingLevels}
+            selection={modelSelection}
+            onModelSelect={handleModelSelect}
+            onReasoningSelect={handleReasoningSelect}
+          />
         </div>
       </div>
 

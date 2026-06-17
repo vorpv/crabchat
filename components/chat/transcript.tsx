@@ -2,15 +2,23 @@
 
 import { useRef, useEffect, useState } from "react"
 import { cn } from "@/lib/utils"
-import { Copy, Check, ChevronDown, ChevronRight, AlertCircle, FileIcon } from "lucide-react"
+import { Copy, Check, AlertCircle, FileIcon, MoreHorizontal, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import type { Message, ToolCall } from "@/lib/types"
+import { AgentStatusIndicator } from "@/components/chat/agent-status"
+import { ChangesSummary, ExecutionDetails } from "@/components/chat/execution-details"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import type { AgentActivity, Message, ToolCall } from "@/lib/types"
 
 interface ChatTranscriptProps {
   messages: Message[]
   isResponding?: boolean
-  showReasoningBlocks?: boolean
-  showToolMessages?: boolean
+  agentActivity?: AgentActivity | null
+  displayChangesSummary?: boolean
   gatewayError?: string | null
   onRetryGateway?: () => void
   retryingGateway?: boolean
@@ -19,13 +27,17 @@ interface ChatTranscriptProps {
 export function ChatTranscript({
   messages,
   isResponding = false,
-  showReasoningBlocks = true,
-  showToolMessages = true,
+  agentActivity,
+  displayChangesSummary = true,
   gatewayError,
   onRetryGateway,
   retryingGateway = false,
 }: ChatTranscriptProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
+  const [detailsMessage, setDetailsMessage] = useState<{
+    title: string
+    toolCalls: ToolCall[]
+  } | null>(null)
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -65,30 +77,46 @@ export function ChatTranscript({
         {messages.map((message) => (
           <MessageGroup
             key={message.id}
+            messages={messages}
             message={message}
-            showReasoningBlocks={showReasoningBlocks}
-            showToolMessages={showToolMessages}
+            displayChangesSummary={displayChangesSummary}
+            onShowDetails={(title, toolCalls) => setDetailsMessage({ title, toolCalls })}
           />
         ))}
-        {isResponding && <TypingIndicator />}
+        {isResponding && (
+          <LiveExecutionDetails messages={messages} activity={agentActivity} />
+        )}
+        {isResponding && <TypingIndicator activity={agentActivity} />}
       </div>
+      {detailsMessage && (
+        <ExecutionDetailsPanel
+          title={detailsMessage.title}
+          toolCalls={detailsMessage.toolCalls}
+          onClose={() => setDetailsMessage(null)}
+        />
+      )}
     </div>
   )
 }
 
 interface MessageGroupProps {
+  messages: Message[]
   message: Message
-  showReasoningBlocks: boolean
-  showToolMessages: boolean
+  displayChangesSummary: boolean
+  onShowDetails: (title: string, toolCalls: ToolCall[]) => void
 }
 
 function MessageGroup({
+  messages,
   message,
-  showReasoningBlocks,
-  showToolMessages,
+  displayChangesSummary,
+  onShowDetails,
 }: MessageGroupProps) {
   const [copied, setCopied] = useState(false)
   const [displayTime, setDisplayTime] = useState<string>("")
+  const messageIndex = messages.findIndex((item) => item.id === message.id)
+  const responseToolCalls = getResponseToolCalls(messages, messageIndex)
+  const hasDetails = responseToolCalls.length > 0
 
   useEffect(() => {
     // Format time on client-side only to avoid hydration mismatch
@@ -161,22 +189,19 @@ function MessageGroup({
     )
   }
 
+  if (!message.content.trim() && message.toolCalls && message.toolCalls.length > 0) {
+    return null
+  }
+
   return (
     <div className="flex flex-col gap-2">
-      {showReasoningBlocks && message.reasoning && (
-        <ReasoningBlock content={message.reasoning} />
-      )}
-      {showToolMessages && message.toolCalls && message.toolCalls.length > 0 && (
-        <div className="space-y-2">
-          {message.toolCalls.map((tool) => (
-            <ToolBlock key={tool.id} tool={tool} />
-          ))}
-        </div>
-      )}
       <div className="group relative">
         <div className="prose prose-sm prose-invert max-w-none text-foreground">
           <MessageContent content={message.content} />
         </div>
+        {displayChangesSummary && message.content.trim() && (
+          <ChangesSummary toolCalls={responseToolCalls} />
+        )}
         <div className="mt-2 flex items-center gap-2 opacity-100 transition-opacity group-hover:opacity-100 md:opacity-0">
           <button
             onClick={handleCopy}
@@ -187,8 +212,27 @@ function MessageGroup({
               <Check className="h-3 w-3" />
             ) : (
               <Copy className="h-3 w-3" />
-            )}
+              )}
           </button>
+          {hasDetails && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  title="More"
+                >
+                  <MoreHorizontal className="h-3.5 w-3.5" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" className="w-36">
+                <DropdownMenuItem
+                  onClick={() => onShowDetails("Execution details", responseToolCalls)}
+                >
+                  Show details
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
           <span className="text-xs text-muted-foreground">
             {displayTime}
           </span>
@@ -198,13 +242,84 @@ function MessageGroup({
   )
 }
 
-function TypingIndicator() {
+function getResponseStartIndex(messages: Message[], index: number) {
+  for (let i = index; i >= 0; i -= 1) {
+    if (messages[i]?.role === "user") return i + 1
+  }
+  return 0
+}
+
+function getResponseToolCalls(messages: Message[], index: number) {
+  if (index < 0) return []
+  const start = getResponseStartIndex(messages, index)
+  return messages.slice(start, index + 1).flatMap((message) => message.toolCalls || [])
+}
+
+function getCurrentResponseToolCalls(messages: Message[]) {
+  const lastUserIndex = [...messages].map((message, index) => ({ message, index }))
+    .reverse()
+    .find((entry) => entry.message.role === "user")?.index
+  if (lastUserIndex === undefined) return []
+  return messages.slice(lastUserIndex + 1).flatMap((message) => message.toolCalls || [])
+}
+
+function LiveExecutionDetails({
+  messages,
+  activity,
+}: {
+  messages: Message[]
+  activity?: AgentActivity | null
+}) {
+  const toolCalls = getCurrentResponseToolCalls(messages)
+  if (toolCalls.length === 0) return null
+
   return (
-    <div className="flex items-center gap-2 text-sm text-muted-foreground">
-      <span className="h-2 w-2 animate-pulse rounded-full bg-muted-foreground/60" />
-      <span>Assistant is typing</span>
+    <div className="rounded-lg border border-border bg-muted/20 px-3 py-2">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <span className="text-xs font-medium text-muted-foreground">Execution details</span>
+        {activity?.active && (
+          <span className="truncate text-xs text-muted-foreground">{activity.label}</span>
+        )}
+      </div>
+      <ExecutionDetails toolCalls={toolCalls} compact />
     </div>
   )
+}
+
+function ExecutionDetailsPanel({
+  title,
+  toolCalls,
+  onClose,
+}: {
+  title: string
+  toolCalls: ToolCall[]
+  onClose: () => void
+}) {
+  return (
+    <aside className="fixed inset-y-0 right-0 z-40 flex w-full max-w-md flex-col border-l border-border bg-background shadow-xl">
+      <div className="flex items-center justify-between border-b border-border px-4 py-3">
+        <h2 className="text-sm font-medium text-foreground">{title}</h2>
+        <button
+          onClick={onClose}
+          className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          title="Close"
+        >
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto p-3 custom-scrollbar">
+        <ExecutionDetails toolCalls={toolCalls} />
+      </div>
+    </aside>
+  )
+}
+
+function TypingIndicator({ activity }: { activity?: AgentActivity | null }) {
+  if (activity?.active) {
+    return <AgentStatusIndicator activity={activity} className="w-fit" />
+  }
+
+  return null
 }
 
 interface MessageContentProps {
@@ -329,115 +444,6 @@ function CodeBlock({ language, code }: CodeBlockProps) {
       <pre className="overflow-x-auto p-3 thin-scrollbar">
         <code className="font-mono text-xs leading-relaxed text-foreground/90">{code}</code>
       </pre>
-    </div>
-  )
-}
-
-interface ReasoningBlockProps {
-  content: string
-}
-
-function ReasoningBlock({ content }: ReasoningBlockProps) {
-  const [expanded, setExpanded] = useState(false)
-
-  return (
-    <div className="rounded-lg border border-border bg-muted/30">
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-muted-foreground hover:text-foreground"
-      >
-        {expanded ? (
-          <ChevronDown className="h-4 w-4" />
-        ) : (
-          <ChevronRight className="h-4 w-4" />
-        )}
-        <span className="font-medium">Reasoning</span>
-      </button>
-      {expanded && (
-        <div className="whitespace-pre-wrap border-t border-border px-3 py-2 text-sm text-muted-foreground">
-          {content}
-        </div>
-      )}
-    </div>
-  )
-}
-
-interface ToolBlockProps {
-  tool: ToolCall
-}
-
-function ToolBlock({ tool }: ToolBlockProps) {
-  const [expanded, setExpanded] = useState(false)
-
-  return (
-    <div
-      className={cn(
-        "rounded-lg border",
-        tool.status === "error"
-          ? "border-destructive/50 bg-destructive/10"
-          : "border-border bg-muted/30"
-      )}
-    >
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm"
-      >
-        {expanded ? (
-          <ChevronDown className="h-4 w-4 text-muted-foreground" />
-        ) : (
-          <ChevronRight className="h-4 w-4 text-muted-foreground" />
-        )}
-        {tool.status === "error" && (
-          <AlertCircle className="h-4 w-4 text-destructive" />
-        )}
-        <span className="font-mono text-xs">{tool.name}</span>
-        <span
-          className={cn(
-            "ml-auto text-xs",
-            tool.status === "error" ? "text-destructive" : "text-muted-foreground"
-          )}
-        >
-          {tool.status === "pending"
-            ? "Running..."
-            : tool.status === "error"
-              ? "Error"
-              : "Complete"}
-        </span>
-      </button>
-      {expanded && (
-        <div className="border-t border-border px-3 py-2">
-          {tool.input && (
-            <div className="mb-2">
-              <div className="mb-1 text-xs font-medium text-muted-foreground">
-                Input
-              </div>
-              <pre className="overflow-x-auto rounded bg-background p-2 text-xs thin-scrollbar">
-                {JSON.stringify(tool.input, null, 2)}
-              </pre>
-            </div>
-          )}
-          {tool.output && (
-            <div>
-              <div className="mb-1 text-xs font-medium text-muted-foreground">
-                Output
-              </div>
-              <pre className="overflow-x-auto rounded bg-background p-2 text-xs thin-scrollbar">
-                {tool.output}
-              </pre>
-            </div>
-          )}
-          {tool.error && (
-            <div>
-              <div className="mb-1 text-xs font-medium text-destructive">
-                Error
-              </div>
-              <pre className="overflow-x-auto rounded bg-background p-2 text-xs text-destructive thin-scrollbar">
-                {tool.error}
-              </pre>
-            </div>
-          )}
-        </div>
-      )}
     </div>
   )
 }
