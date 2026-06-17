@@ -143,8 +143,8 @@
 
 /* Custom Scrollbar */
 @layer utilities {
-  .font-rye {
-    font-family: var(--font-rye) !important;
+  .font-brand {
+    font-family: var(--font-bungee) !important;
   }
 
   .custom-scrollbar {

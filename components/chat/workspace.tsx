@@ -1080,7 +1080,7 @@ function ConnectionSetupDialog({ onRetry }: { onRetry: () => void }) {
         <div className="space-y-2">
           <h1
             id="connection-setup-title"
-            className="font-[family-name:var(--font-rye)] text-3xl font-normal"
+            className="font-brand text-3xl font-normal"
           >
             Connect to the gateway
           </h1>
@@ -1098,7 +1098,7 @@ OCLAW_GATEWAY_TOKEN=your-token
 OCLAW_GATEWAY_PASSWORD=your-password`}
         />
         <p className="mt-3 text-sm text-muted-foreground">
-          Then restart Outclaw server for changes to apply
+          Then restart CrabChat server for changes to apply
         </p>
 
         <section className="mt-6 rounded-lg border border-border p-4">

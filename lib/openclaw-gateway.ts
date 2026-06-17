@@ -35,8 +35,8 @@ const DEFAULT_GATEWAY_URL = "ws://127.0.0.1:18789"
 const REQUEST_TIMEOUT_MS = 20_000
 const DEVICE_KEYS_PATH = pathResolve(process.cwd(), ".device-keys.json")
 const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex")
-const GATEWAY_QUEUE = Symbol.for("outclaw.gatewayQueue.v2")
-const SESSION_LIST_CACHE = Symbol.for("outclaw.sessionListCache")
+const GATEWAY_QUEUE = Symbol.for("crabchat.gatewayQueue.v2")
+const SESSION_LIST_CACHE = Symbol.for("crabchat.sessionListCache")
 const SESSION_LIST_CACHE_MS = 5_000
 
 type GatewayFrame = Record<string, unknown>
@@ -451,7 +451,7 @@ async function makeConnectionRequest(auth: GatewayAuth, challenge?: string) {
     maxProtocol: 4,
     client: {
       id: clientId,
-      displayName: "outclaw",
+      displayName: "CrabChat",
       version: "dev",
       platform: process.platform,
       mode: clientMode,

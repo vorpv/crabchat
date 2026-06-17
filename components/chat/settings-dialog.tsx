@@ -28,7 +28,7 @@ export function SettingsDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[85vh] w-full max-w-md overflow-hidden p-0">
         <DialogHeader className="border-b border-border px-4 py-3">
-          <DialogTitle className="font-rye text-lg font-normal tracking-wide">
+          <DialogTitle className="font-brand text-lg font-normal tracking-wide">
             Settings
           </DialogTitle>
         </DialogHeader>

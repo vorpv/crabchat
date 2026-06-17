@@ -15,7 +15,6 @@ import {
   ChevronRight,
   MessageSquare,
   PanelLeftClose,
-  PanelLeft,
   Plus,
   Search,
   Settings,
@@ -125,9 +124,11 @@ export function ChatSidebar({
       >
         {expanded && (
           <div className="flex h-8 items-center gap-2 px-2 text-sidebar-foreground">
-            <img src="/hat.svg" alt="" className="h-5 w-5 dark:invert" />
-            <span className="font-rye text-base tracking-wide">
-              Outclaw
+            <span className="inline-flex h-7 w-7 items-center justify-center overflow-hidden rounded-md bg-sidebar-accent ring-1 ring-sidebar-border">
+              <img src="/crabchat-black.svg" alt="" className="h-5 w-5 object-contain dark:invert" />
+            </span>
+            <span className="font-brand text-base tracking-wide">
+              CrabChat
             </span>
           </div>
         )}
@@ -140,7 +141,7 @@ export function ChatSidebar({
           {expanded ? (
             <PanelLeftClose className="h-4 w-4" />
           ) : (
-            <PanelLeft className="h-4 w-4" />
+            <img src="/crabchat-black.svg" alt="" className="h-5 w-5 object-contain dark:invert" />
           )}
         </button>
       </div>

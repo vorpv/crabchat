@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from 'next'
-import { Inter, JetBrains_Mono, Rye } from 'next/font/google'
+import { Bungee, Inter, JetBrains_Mono } from 'next/font/google'
 import './globals.css'
 
 const inter = Inter({
@@ -12,17 +12,17 @@ const jetbrainsMono = JetBrains_Mono({
   variable: '--font-jetbrains-mono',
 })
 
-const rye = Rye({
+const bungee = Bungee({
   subsets: ['latin'],
   weight: '400',
-  variable: '--font-rye',
+  variable: '--font-bungee',
 })
 
 export const metadata: Metadata = {
-  title: 'Outclaw',
+  title: 'CrabChat',
   description: 'AI Assistant Chat Workspace',
   icons: {
-    icon: '/icon.svg',
+    icon: '/favicon.svg',
   },
 }
 
@@ -40,7 +40,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className="dark bg-background">
-      <body className={`${inter.variable} ${jetbrainsMono.variable} ${rye.variable} font-sans antialiased`}>
+      <body className={`${inter.variable} ${jetbrainsMono.variable} ${bungee.variable} font-sans antialiased`}>
         {children}
       </body>
     </html>
