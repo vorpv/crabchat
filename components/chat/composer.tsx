@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useRef, useEffect, type KeyboardEvent } from "react"
+import { useState, useRef, useEffect, useCallback, useLayoutEffect, type KeyboardEvent } from "react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import {
@@ -49,6 +49,31 @@ const VALID_IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"]
 const MAX_IMAGE_SIZE = 10 * 1024 * 1024
 const MAX_IMAGE_DIMENSION = 1280
 const TARGET_ENCODED_SIZE = 1_500_000
+const TEXTAREA_LINE_HEIGHT = 20
+const TEXTAREA_VERTICAL_PADDING = 12
+const TEXTAREA_SINGLE_LINE_HEIGHT = 32
+const TEXTAREA_MAX_HEIGHT = TEXTAREA_LINE_HEIGHT * 8 + TEXTAREA_VERTICAL_PADDING
+const TEXTAREA_COMPACT_GAP = 8
+
+let textMeasureCanvas: HTMLCanvasElement | null = null
+
+function measureLongestLineWidth(textarea: HTMLTextAreaElement, value: string) {
+  if (!textMeasureCanvas) {
+    textMeasureCanvas = document.createElement("canvas")
+  }
+
+  const context = textMeasureCanvas.getContext("2d")
+  if (!context) {
+    return 0
+  }
+
+  const styles = window.getComputedStyle(textarea)
+  context.font = styles.font
+
+  return value
+    .split("\n")
+    .reduce((maxWidth, line) => Math.max(maxWidth, context.measureText(line || " ").width), 0)
+}
 
 export function ChatComposer({
   onSend,
@@ -64,15 +89,85 @@ export function ChatComposer({
   const [hoveredAttachment, setHoveredAttachment] = useState<AttachmentPreview | null>(null)
   const [modelPickerOpen, setModelPickerOpen] = useState(false)
   const [expandedModelId, setExpandedModelId] = useState<string | null>(null)
+  const [textareaLayout, setTextareaLayout] = useState({
+    multiline: false,
+    scrollable: false,
+  })
+  const [actionsRegrouping, setActionsRegrouping] = useState(false)
+  const composerInputRef = useRef<HTMLDivElement>(null)
+  const composerActionsRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const didObserveLayoutModeRef = useRef(false)
+  const contentRef = useRef(content)
+  contentRef.current = content
+
+  const syncTextareaLayout = useCallback(() => {
+    const textarea = textareaRef.current
+    if (!textarea) {
+      return
+    }
+
+    const previousHeight = textarea.offsetHeight
+    textarea.style.height = "auto"
+    const scrollHeight = textarea.scrollHeight
+    const nextHeight = Math.max(
+      TEXTAREA_SINGLE_LINE_HEIGHT,
+      Math.min(scrollHeight, TEXTAREA_MAX_HEIGHT)
+    )
+
+    if (previousHeight > 0 && Math.abs(previousHeight - nextHeight) > 1) {
+      textarea.style.height = `${previousHeight}px`
+      void textarea.offsetHeight
+    }
+    textarea.style.height = `${nextHeight}px`
+    textarea.style.overflowY = scrollHeight > TEXTAREA_MAX_HEIGHT ? "auto" : "hidden"
+
+    const composerWidth = composerInputRef.current?.clientWidth ?? textarea.clientWidth
+    const actionsWidth = composerActionsRef.current?.offsetWidth ?? 0
+    const compactTextareaWidth = Math.max(
+      0,
+      composerWidth - actionsWidth - TEXTAREA_COMPACT_GAP
+    )
+    const longestLineWidth =
+      measureLongestLineWidth(textarea, contentRef.current) + TEXTAREA_VERTICAL_PADDING
+    const overflowsCompactRow =
+      compactTextareaWidth > 0 && longestLineWidth > compactTextareaWidth + 1
+    const nextLayout = {
+      multiline: overflowsCompactRow || scrollHeight > TEXTAREA_SINGLE_LINE_HEIGHT + 2,
+      scrollable: scrollHeight > TEXTAREA_MAX_HEIGHT + 1,
+    }
+
+    setTextareaLayout((current) =>
+      current.multiline === nextLayout.multiline && current.scrollable === nextLayout.scrollable
+        ? current
+        : nextLayout
+    )
+  }, [])
+
+  useLayoutEffect(() => {
+    syncTextareaLayout()
+  }, [content, syncTextareaLayout, textareaLayout.multiline])
 
   useEffect(() => {
-    if (textareaRef.current) {
-      textareaRef.current.style.height = "auto"
-      textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 200)}px`
+    if (!didObserveLayoutModeRef.current) {
+      didObserveLayoutModeRef.current = true
+      return
     }
-  }, [content])
+
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      return
+    }
+
+    setActionsRegrouping(true)
+    const timeout = window.setTimeout(() => setActionsRegrouping(false), 160)
+    return () => window.clearTimeout(timeout)
+  }, [textareaLayout.multiline])
+
+  useEffect(() => {
+    window.addEventListener("resize", syncTextareaLayout)
+    return () => window.removeEventListener("resize", syncTextareaLayout)
+  }, [syncTextareaLayout])
 
   useEffect(() => {
     if (modelPickerOpen && selection.model) {
@@ -260,25 +355,51 @@ export function ChatComposer({
             )}
 
             {/* Text Input */}
-            <div className="flex items-end gap-2 p-3">
-              <textarea
-                ref={textareaRef}
-                value={content}
-                onChange={(e) => setContent(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder="Type a message..."
-                disabled={disabled}
-                rows={1}
+            <div
+              ref={composerInputRef}
+              className={cn(
+                "flex p-3 transition-[gap] duration-200 ease-out motion-reduce:transition-none",
+                textareaLayout.multiline ? "flex-col items-stretch gap-2" : "items-center gap-2"
+              )}
+            >
+              <div
                 className={cn(
-                  "flex-1 resize-none bg-transparent text-sm leading-relaxed text-foreground",
-                  "placeholder:text-muted-foreground",
-                  "focus:outline-none",
-                  "disabled:cursor-not-allowed disabled:opacity-50",
-                  "thin-scrollbar"
+                  "relative min-w-0 transition-[width,flex-basis] duration-200 ease-out motion-reduce:transition-none",
+                  textareaLayout.multiline ? "w-full" : "flex-1"
                 )}
-              />
+              >
+                {textareaLayout.scrollable && (
+                  <>
+                    <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-5 bg-gradient-to-b from-card to-transparent" />
+                    <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 h-5 bg-gradient-to-t from-card to-transparent" />
+                  </>
+                )}
+                <textarea
+                  ref={textareaRef}
+                  value={content}
+                  onChange={(e) => setContent(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder="Type a message..."
+                  disabled={disabled}
+                  rows={1}
+                  className={cn(
+                    "block w-full resize-none bg-transparent py-1.5 text-sm leading-5 text-foreground transition-[height] duration-200 ease-out motion-reduce:transition-none",
+                    "placeholder:text-muted-foreground",
+                    "focus:outline-none",
+                    "disabled:cursor-not-allowed disabled:opacity-50",
+                    textareaLayout.scrollable ? "thin-scrollbar pr-1" : "overflow-hidden"
+                  )}
+                />
+              </div>
 
-              <div className="flex items-center gap-1">
+              <div
+                ref={composerActionsRef}
+                className={cn(
+                  "flex items-center gap-1 transition-[opacity,transform] duration-150 ease-out motion-reduce:transition-none",
+                  textareaLayout.multiline ? "justify-end" : "shrink-0",
+                  actionsRegrouping && "translate-y-0.5 opacity-80"
+                )}
+              >
                 <Popover open={modelPickerOpen} onOpenChange={setModelPickerOpen}>
                   <PopoverTrigger asChild>
                     <button
