@@ -1013,6 +1013,8 @@ export function ChatWorkspace() {
 
           <ChatTranscript
             messages={activeMessages}
+            workspaceRoot={activeSession?.workspaceRoot}
+            workspaceSessionKey={activeSession?.key}
             isResponding={isResponding}
             agentActivity={visibleAgentActivity}
             displayChangesSummary={settings.displayChangesSummary}

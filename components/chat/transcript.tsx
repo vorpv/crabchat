@@ -16,6 +16,8 @@ import type { AgentActivity, Message, ToolCall } from "@/lib/types"
 
 interface ChatTranscriptProps {
   messages: Message[]
+  workspaceRoot?: string
+  workspaceSessionKey?: string
   isResponding?: boolean
   agentActivity?: AgentActivity | null
   displayChangesSummary?: boolean
@@ -26,6 +28,8 @@ interface ChatTranscriptProps {
 
 export function ChatTranscript({
   messages,
+  workspaceRoot,
+  workspaceSessionKey,
   isResponding = false,
   agentActivity,
   displayChangesSummary = true,
@@ -79,6 +83,8 @@ export function ChatTranscript({
             key={message.id}
             messages={messages}
             message={message}
+            workspaceRoot={workspaceRoot}
+            workspaceSessionKey={workspaceSessionKey}
             displayChangesSummary={displayChangesSummary}
             onShowDetails={(title, toolCalls) => setDetailsMessage({ title, toolCalls })}
           />
@@ -102,6 +108,8 @@ export function ChatTranscript({
 interface MessageGroupProps {
   messages: Message[]
   message: Message
+  workspaceRoot?: string
+  workspaceSessionKey?: string
   displayChangesSummary: boolean
   onShowDetails: (title: string, toolCalls: ToolCall[]) => void
 }
@@ -109,6 +117,8 @@ interface MessageGroupProps {
 function MessageGroup({
   messages,
   message,
+  workspaceRoot,
+  workspaceSessionKey,
   displayChangesSummary,
   onShowDetails,
 }: MessageGroupProps) {
@@ -197,7 +207,11 @@ function MessageGroup({
     <div className="flex flex-col gap-2">
       <div className="group relative">
         <div className="prose prose-sm prose-invert max-w-none text-foreground">
-          <MessageContent content={message.content} />
+          <MessageContent
+            content={message.content}
+            workspaceRoot={workspaceRoot}
+            workspaceSessionKey={workspaceSessionKey}
+          />
         </div>
         {displayChangesSummary && message.content.trim() && (
           <ChangesSummary toolCalls={responseToolCalls} />
@@ -324,9 +338,11 @@ function TypingIndicator({ activity }: { activity?: AgentActivity | null }) {
 
 interface MessageContentProps {
   content: string
+  workspaceRoot?: string
+  workspaceSessionKey?: string
 }
 
-function MessageContent({ content }: MessageContentProps) {
+function MessageContent({ content, workspaceRoot, workspaceSessionKey }: MessageContentProps) {
   const parts = content.split(/(```[\s\S]*?```)/g)
 
   return (
@@ -365,7 +381,11 @@ function MessageContent({ content }: MessageContentProps) {
               >
                 {items.map((item, i) => (
                   <li key={i} className="text-foreground/90">
-                    {item.replace(/^(\d+\.\s|-\s)/, "")}
+                    {formatInlineContent(
+                      item.replace(/^(\d+\.\s|-\s)/, ""),
+                      workspaceRoot,
+                      workspaceSessionKey
+                    )}
                   </li>
                 ))}
               </ListTag>
@@ -374,7 +394,7 @@ function MessageContent({ content }: MessageContentProps) {
           if (line.trim()) {
             return (
               <p key={`${index}-${lineIndex}`} className="my-3 whitespace-pre-wrap leading-relaxed text-foreground/90 first:mt-0">
-                {formatInlineCode(line)}
+                {formatInlineContent(line, workspaceRoot, workspaceSessionKey)}
               </p>
             )
           }
@@ -385,7 +405,27 @@ function MessageContent({ content }: MessageContentProps) {
   )
 }
 
-function formatInlineCode(text: string) {
+function isLocalFileHref(href: string) {
+  return (
+    href.startsWith("/workspace/") ||
+    href === "/workspace" ||
+    href.startsWith("/home/") ||
+    href.startsWith("/tmp/")
+  )
+}
+
+function getFileDeepLink(href: string, workspaceRoot?: string, workspaceSessionKey?: string) {
+  const params = new URLSearchParams({ path: href })
+  if (workspaceRoot) {
+    params.set("root", workspaceRoot)
+  }
+  if (workspaceSessionKey) {
+    params.set("session", workspaceSessionKey)
+  }
+  return `/api/open-file?${params.toString()}`
+}
+
+function formatInlineContent(text: string, workspaceRoot?: string, workspaceSessionKey?: string) {
   const parts = text.split(/(`[^`]+`)/g)
   return parts.map((part, i) => {
     if (part.startsWith("`") && part.endsWith("`")) {
@@ -398,15 +438,51 @@ function formatInlineCode(text: string) {
         </code>
       )
     }
+    return formatInlineLinksAndBold(part, `text-${i}`, workspaceRoot, workspaceSessionKey)
+  })
+}
+
+function formatInlineLinksAndBold(
+  text: string,
+  keyPrefix: string,
+  workspaceRoot?: string,
+  workspaceSessionKey?: string
+) {
+  const parts = text.split(/(\[[^\]]+\]\([^)]+\))/g)
+
+  return parts.map((part, index) => {
+    const linkMatch = part.match(/^\[([^\]]+)\]\(([^)]+)\)$/)
+    if (linkMatch) {
+      const [, label, href] = linkMatch
+      const localFile = isLocalFileHref(href)
+      return (
+        <a
+          key={`${keyPrefix}-link-${index}`}
+          href={localFile ? getFileDeepLink(href, workspaceRoot, workspaceSessionKey) : href}
+          target={localFile ? undefined : "_blank"}
+          rel={localFile ? undefined : "noreferrer"}
+          title={localFile ? `Open ${href}` : href}
+          className="font-medium text-primary underline underline-offset-4 hover:text-primary/80"
+        >
+          {label}
+        </a>
+      )
+    }
+
     if (part.includes("**")) {
       const boldParts = part.split(/(\*\*[^*]+\*\*)/g)
-      return boldParts.map((bp, j) => {
-        if (bp.startsWith("**") && bp.endsWith("**")) {
-          return <strong key={`${i}-${j}`}>{bp.slice(2, -2)}</strong>
+      return boldParts.map((boldPart, boldIndex) => {
+        if (boldPart.startsWith("**") && boldPart.endsWith("**")) {
+          return (
+            <strong key={`${keyPrefix}-bold-${index}-${boldIndex}`}>
+              {boldPart.slice(2, -2)}
+            </strong>
+          )
         }
-        return bp
+        return boldPart
       })
     }
+
     return part
   })
 }

@@ -11,6 +11,7 @@ export interface Session {
   pinned: boolean
   agentId?: string
   agentName?: string
+  workspaceRoot?: string
   runtimeStatus?: string
   hasActiveRun?: boolean
   model?: string

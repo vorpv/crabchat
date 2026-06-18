@@ -863,6 +863,41 @@ function normalizeSessionAgentName(item: GatewayFrame) {
   )
 }
 
+function normalizeSessionWorkspaceRoot(item: GatewayFrame) {
+  const workspace = asRecord(item.workspace)
+  const runtime = asRecord(item.agentRuntime)
+  const runtimeWorkspace = asRecord(runtime?.workspace)
+  const agent = asRecord(item.agent)
+  const agentWorkspace = asRecord(agent?.workspace)
+
+  return (
+    asString(item.workspaceRoot) ||
+    asString(item.workspace_root) ||
+    asString(item.workspacePath) ||
+    asString(item.workspace_path) ||
+    asString(item.workingDirectory) ||
+    asString(item.working_directory) ||
+    asString(item.projectRoot) ||
+    asString(item.project_root) ||
+    asString(workspace?.root) ||
+    asString(workspace?.path) ||
+    asString(runtime?.workspaceRoot) ||
+    asString(runtime?.workspace_root) ||
+    asString(runtime?.workspacePath) ||
+    asString(runtime?.workspace_path) ||
+    asString(runtime?.workingDirectory) ||
+    asString(runtime?.working_directory) ||
+    asString(runtimeWorkspace?.root) ||
+    asString(runtimeWorkspace?.path) ||
+    asString(agent?.workspaceRoot) ||
+    asString(agent?.workspace_root) ||
+    asString(agent?.workspacePath) ||
+    asString(agent?.workspace_path) ||
+    asString(agentWorkspace?.root) ||
+    asString(agentWorkspace?.path)
+  )
+}
+
 function normalizeSession(raw: unknown): Session {
   const item = asRecord(raw) ?? {}
   const key =
@@ -906,6 +941,7 @@ function normalizeSession(raw: unknown): Session {
     pinned: false,
     agentId,
     agentName,
+    workspaceRoot: normalizeSessionWorkspaceRoot(item),
     runtimeStatus: asString(item.status),
     hasActiveRun: item.hasActiveRun === true,
     model: asString(item.model),
