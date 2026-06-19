@@ -1,5 +1,6 @@
 import { execFile, spawn } from "node:child_process"
 import { promisify } from "node:util"
+import { getOpenClawConnectionConfig } from "@/lib/crabchat-home"
 import { AppError } from "@/lib/openclaw-gateway"
 
 const execFileAsync = promisify(execFile)
@@ -123,23 +124,13 @@ function resolveGatewayUrl(gateway: JsonObject) {
   const host = asString(gateway.host) || "127.0.0.1"
   const port = typeof gateway.port === "number" ? gateway.port : 18789
 
-  return (
-    process.env.OCLAW_GATEWAY_URL ||
-    asString(gateway.url) ||
-    asString(remote?.url) ||
-    `${protocol}://${host}:${port}`
-  )
+  return getOpenClawConnectionConfig().gatewayUrl || asString(gateway.url) || asString(remote?.url) || `${protocol}://${host}:${port}`
 }
 
 function resolveGatewayPassword(gateway: JsonObject) {
   const auth = asObject(gateway.auth)
   const remote = asObject(gateway.remote)
-  return (
-    process.env.OCLAW_GATEWAY_PASSWORD ||
-    asString(auth?.password) ||
-    asString(remote?.password) ||
-    ""
-  )
+  return getOpenClawConnectionConfig().password || asString(auth?.password) || asString(remote?.password) || ""
 }
 
 function normalizeReset(value: unknown): SessionResetConfig | undefined {

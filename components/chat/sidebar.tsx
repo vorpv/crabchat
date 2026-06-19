@@ -11,6 +11,7 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area"
 import {
   Bot,
+  Archive,
   ChevronDown,
   ChevronRight,
   MessageSquare,
@@ -417,6 +418,7 @@ function SessionRow({
           : "text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
       )}
     >
+      {session.archived && <Archive className="h-3 w-3 shrink-0 text-muted-foreground" />}
       {session.pinned && <Pin className="h-3 w-3 shrink-0 text-muted-foreground" />}
       <span className="flex-1 truncate">{session.title}</span>
       <DropdownMenu>

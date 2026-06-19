@@ -1,4 +1,5 @@
-import { sendMessage, toErrorResponse } from "@/lib/openclaw-gateway"
+import { sendCrabChatMessage } from "@/lib/crabchat-store"
+import { toErrorResponse } from "@/lib/openclaw-gateway"
 
 export const runtime = "nodejs"
 
@@ -15,7 +16,7 @@ export async function POST(request: Request) {
       )
     }
 
-    const payload = await sendMessage({
+    const payload = await sendCrabChatMessage({
       session: body.session,
       text,
       attachments,

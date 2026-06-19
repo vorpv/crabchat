@@ -1,8 +1,10 @@
 import {
-  createSession,
-  deleteSession,
-  listSessions,
-  patchSession,
+  createCrabChatSession,
+  deleteCrabChatSession,
+  patchCrabChatSession,
+  syncCrabChatSessions,
+} from "@/lib/crabchat-store"
+import {
   toErrorResponse,
 } from "@/lib/openclaw-gateway"
 
@@ -17,7 +19,7 @@ function getErrorContext(request: Request) {
 
 export async function GET(request: Request) {
   try {
-    return Response.json(await listSessions())
+    return Response.json(await syncCrabChatSessions())
   } catch (error) {
     return toErrorResponse(error, getErrorContext(request))
   }
@@ -27,7 +29,7 @@ export async function POST(request: Request) {
   try {
     const body = await request.json().catch(() => ({}))
     const agentId = typeof body.agentId === "string" ? body.agentId : undefined
-    return Response.json({ session: await createSession(body.label, agentId) })
+    return Response.json({ session: await createCrabChatSession(body.label, agentId) })
   } catch (error) {
     return toErrorResponse(error, getErrorContext(request))
   }
@@ -51,7 +53,7 @@ export async function PATCH(request: Request) {
       )
     }
     return Response.json({
-      session: await patchSession(body.identifier, {
+      session: await patchCrabChatSession(body.identifier, {
         label: typeof body.label === "string" ? body.label : undefined,
         model: typeof body.model === "string" ? body.model : undefined,
         thinkingLevel:
@@ -76,7 +78,7 @@ export async function DELETE(request: Request) {
         { status: 400 }
       )
     }
-    return Response.json(await deleteSession(body.identifier))
+    return Response.json(await deleteCrabChatSession(body.identifier))
   } catch (error) {
     return toErrorResponse(error, getErrorContext(request))
   }

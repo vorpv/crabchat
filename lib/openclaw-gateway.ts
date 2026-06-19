@@ -15,6 +15,7 @@ import {
 } from "node:fs"
 import { dirname, resolve as pathResolve } from "node:path"
 import WebSocket from "ws"
+import { getOpenClawConnectionConfig } from "@/lib/crabchat-home"
 import type { KeyObject } from "node:crypto"
 import type {
   Agent,
@@ -153,12 +154,11 @@ type ErrorResponseContext = {
 }
 
 function getGatewayAuth(): GatewayAuth {
-  const token = process.env.OCLAW_GATEWAY_TOKEN
-  const password = process.env.OCLAW_GATEWAY_PASSWORD
+  const { token, password } = getOpenClawConnectionConfig()
 
   if (!token && !password) {
     throw new AppError(
-      "Missing gateway auth. Set OCLAW_GATEWAY_TOKEN or OCLAW_GATEWAY_PASSWORD.",
+      "Missing gateway auth. Configure openclaw.token or openclaw.password in crabchat.json.",
       401,
       "missing_auth"
     )
@@ -168,7 +168,7 @@ function getGatewayAuth(): GatewayAuth {
 }
 
 function getGatewayUrl() {
-  return process.env.OCLAW_GATEWAY_URL || DEFAULT_GATEWAY_URL
+  return getOpenClawConnectionConfig().gatewayUrl || DEFAULT_GATEWAY_URL
 }
 
 function isLoopbackGatewayUrl(url: string) {
@@ -1568,7 +1568,7 @@ export async function listSessions() {
 
   try {
     const payload = await requestFirst(["sessions.list"], {
-      limit: 50,
+      limit: 500,
       includeLastMessage: true,
       includeDerivedTitles: true,
     })

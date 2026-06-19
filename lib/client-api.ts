@@ -3,6 +3,7 @@
 import type {
   Agent,
   Attachment,
+  CrabChatState,
   Message,
   ModelOption,
   OpenClawConfigView,
@@ -64,6 +65,7 @@ function normalizeSession(session: Session): Session {
     title: session.title || session.friendlyId || session.id || "Conversation",
     updatedAt: normalizeDate(session.updatedAt),
     createdAt: session.createdAt ? normalizeDate(session.createdAt) : undefined,
+    archivedAt: session.archivedAt ? normalizeDate(session.archivedAt) : undefined,
   }
 }
 
@@ -122,6 +124,19 @@ export async function fetchModels() {
 
 export async function fetchUsageStatus() {
   return apiFetch<UsageStatus>("/api/openclaw/usage")
+}
+
+export async function fetchCrabChatState() {
+  return apiFetch<CrabChatState>("/api/crabchat/state")
+}
+
+export async function saveCrabChatState(
+  patch: Partial<Pick<CrabChatState, "settings" | "modelSelection" | "pins">>
+) {
+  return apiFetch<CrabChatState>("/api/crabchat/state", {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  })
 }
 
 export async function fetchOpenClawConfig() {

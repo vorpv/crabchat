@@ -9,6 +9,8 @@ export interface Session {
   friendlyId?: string
   title: string
   pinned: boolean
+  archived?: boolean
+  archivedAt?: Date
   agentId?: string
   agentName?: string
   workspaceRoot?: string
@@ -116,6 +118,19 @@ export interface Settings {
   theme: "system" | "light" | "dark"
   displayChangesSummary: boolean
   displayTokenUsage: boolean
+}
+
+export interface CrabChatFeatures {
+  archiving: {
+    enabled: boolean
+  }
+}
+
+export interface CrabChatState {
+  settings: Settings
+  modelSelection: ModelReasoningSelection
+  pins: string[]
+  features: CrabChatFeatures
 }
 
 export interface OpenClawSessionResetConfig {

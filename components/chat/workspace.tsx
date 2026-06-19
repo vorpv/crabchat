@@ -17,6 +17,7 @@ import {
   createSession,
   exportConversation,
   fetchAgents,
+  fetchCrabChatState,
   fetchHistory,
   fetchModels,
   fetchSessions,
@@ -24,11 +25,10 @@ import {
   isMissingAuth,
   NEW_CHAT_ID,
   patchSessionPreferences,
-  readJsonStorage,
   removeSession,
   renameSession,
+  saveCrabChatState,
   sendChatMessage,
-  writeJsonStorage,
 } from "@/lib/client-api"
 import type {
   Agent,
@@ -48,9 +48,6 @@ import type {
 
 hljs.registerLanguage("bash", bash)
 
-const SETTINGS_KEY = "openclaw-chat-settings"
-const PINNED_KEY = "openclaw-pinned-sessions"
-const MODEL_SELECTION_KEY = "openclaw-model-selection"
 const RESPONSE_POLL_INTERVAL_MS = 1_200
 const RESPONSE_POLL_TIMEOUT_MS = 120_000
 
@@ -272,6 +269,7 @@ export function ChatWorkspace() {
 
   const [settings, setSettings] = useState<Settings>(defaultSettings)
   const pendingSessionPatchRef = useRef(new Map<string, Promise<Session>>())
+  const crabStateLoadedRef = useRef(false)
 
   const activeSession = sessions.find((session) => session.id === activeSessionId)
   const activeThinkingLevels = useMemo(() => {
@@ -533,14 +531,24 @@ export function ChatWorkspace() {
   )
 
   useEffect(() => {
-    setSettings({ ...defaultSettings, ...readJsonStorage(SETTINGS_KEY, defaultSettings) })
-    setPinnedIds(new Set(readJsonStorage<string[]>(PINNED_KEY, [])))
-    setModelSelection(
-      readJsonStorage<ModelReasoningSelection>(MODEL_SELECTION_KEY, {
-        model: "",
-        reasoningLevel: "medium",
+    let cancelled = false
+    fetchCrabChatState()
+      .then((state) => {
+        if (cancelled) return
+        setSettings({ ...defaultSettings, ...state.settings })
+        setPinnedIds(new Set(state.pins))
+        setModelSelection({
+          model: state.modelSelection.model || "",
+          reasoningLevel: state.modelSelection.reasoningLevel || "medium",
+        })
+        crabStateLoadedRef.current = true
       })
-    )
+      .catch(() => {
+        crabStateLoadedRef.current = true
+      })
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   useEffect(() => {
@@ -565,14 +573,18 @@ export function ChatWorkspace() {
     }
 
     applyTheme()
-    writeJsonStorage(SETTINGS_KEY, settings)
+    if (crabStateLoadedRef.current) {
+      void saveCrabChatState({ settings })
+    }
     systemPrefersDark.addEventListener("change", applyTheme)
 
     return () => systemPrefersDark.removeEventListener("change", applyTheme)
   }, [settings])
 
   useEffect(() => {
-    writeJsonStorage(MODEL_SELECTION_KEY, modelSelection)
+    if (crabStateLoadedRef.current) {
+      void saveCrabChatState({ modelSelection })
+    }
   }, [modelSelection])
 
   useEffect(() => {
@@ -712,7 +724,7 @@ export function ChatWorkspace() {
       const next = new Set(current)
       if (next.has(sessionId)) next.delete(sessionId)
       else next.add(sessionId)
-      writeJsonStorage(PINNED_KEY, Array.from(next))
+      void saveCrabChatState({ pins: Array.from(next) })
       return next
     })
   }
@@ -827,6 +839,10 @@ export function ChatWorkspace() {
 
   const handleSendMessage = async (content: string, attachments?: SentAttachment[]) => {
     if (isResponding) return
+    if (activeSession?.archived) {
+      setStatusError("Archived sessions are read-only.")
+      return
+    }
 
     const trimmedContent = content.trim()
     const validAttachments: Attachment[] =
@@ -1027,7 +1043,7 @@ export function ChatWorkspace() {
 
           <ChatComposer
             onSend={handleSendMessage}
-            disabled={isResponding || setupRequired}
+            disabled={isResponding || setupRequired || Boolean(activeSession?.archived)}
             models={composerModels}
             thinkingLevels={activeThinkingLevels}
             selection={modelSelection}
@@ -1094,15 +1110,16 @@ function ConnectionSetupDialog({ onRetry }: { onRetry: () => void }) {
         </div>
 
         <SetupCodeBlock
-          label="Set up environment variables"
-          code={`OCLAW_GATEWAY_URL=ws://127.0.0.1:18789
-OCLAW_GATEWAY_TOKEN=your-token
-
-# Optional, if you have password auth enabled or disabled toekn auth
-OCLAW_GATEWAY_PASSWORD=your-password`}
+          label="Configure CRABCHAT_HOME/crabchat.json"
+          code={`{
+  "openclaw": {
+    "gatewayUrl": "ws://127.0.0.1:18789",
+    "token": "your-token"
+  }
+}`}
         />
         <p className="mt-3 text-sm text-muted-foreground">
-          Then restart CrabChat server for changes to apply
+          By default, CrabChat reads this from ~/.crabchat/crabchat.json. Set CRABCHAT_HOME only if you want a different folder.
         </p>
 
         <section className="mt-6 rounded-lg border border-border p-4">
@@ -1112,7 +1129,7 @@ OCLAW_GATEWAY_PASSWORD=your-password`}
             <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs text-foreground">
               ws://127.0.0.1:18789
             </code>
-            . To get a token, you can use OpenClaw CLI tool:
+            . To get a token, use the OpenClaw CLI tool:
           </p>
           <SetupCodeBlock
             code="openclaw config get gateway.auth.token"

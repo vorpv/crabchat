@@ -1,9 +1,10 @@
 import { execFileSync } from "node:child_process"
 import { existsSync, readdirSync, readFileSync } from "node:fs"
+import { homedir } from "node:os"
 import { NextRequest, NextResponse } from "next/server"
 
 const WORKSPACE_ALIAS = "/workspace"
-const SANDBOX_CONTAINERS_DIR = `${process.env.HOME || ""}/.openclaw/sandbox/containers`
+const SANDBOX_CONTAINERS_DIR = `${homedir()}/.openclaw/sandbox/containers`
 
 type SandboxContainerMetadata = {
   backendId?: string
