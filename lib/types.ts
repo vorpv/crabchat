@@ -75,8 +75,21 @@ export interface Message {
   attachments?: Attachment[]
   reasoning?: string
   toolCalls?: ToolCall[]
+  usage?: MessageUsage
   status?: "sending" | "sent" | "error"
   error?: string
+}
+
+export interface MessageUsage {
+  inputTokens?: number
+  outputTokens?: number
+  totalTokens?: number
+  contextTokens?: number
+  contextCapacityTokens?: number
+  contextUsagePercent?: number
+  model?: string
+  modelProvider?: string
+  reasoningLevel?: string
 }
 
 export interface Attachment {
@@ -102,6 +115,7 @@ export interface ToolCall {
 export interface Settings {
   theme: "system" | "light" | "dark"
   displayChangesSummary: boolean
+  displayTokenUsage: boolean
 }
 
 export interface ProviderUsageWindow {

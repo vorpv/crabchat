@@ -185,15 +185,13 @@ function getApplyPatchChanges(tool: ToolCall) {
 
 export function getApplyPatchSummaryItems(toolCalls: ToolCall[]) {
   return toolCalls.flatMap((tool) => {
-    if (tool.name !== "apply_patch") return []
+    if (tool.name !== "apply_patch" || tool.status === "error") return []
     return getApplyPatchChanges(tool).map((change, index) => {
       const kind = asRecord(change.kind)
       const path = asString(change.path) || "unknown"
       const movePath = asString(kind?.move_path)
       const type = asString(kind?.type) || "update"
       const targetPath = movePath
-      const failed = tool.status === "error"
-
       let label = `Edited file ${compactPath(path)}`
       if (type === "add") label = `Created file ${compactPath(path)}`
       if (type === "delete") label = `Deleted file ${compactPath(path)}`
@@ -206,7 +204,7 @@ export function getApplyPatchSummaryItems(toolCalls: ToolCall[]) {
 
       return {
         id: `${tool.id}-${index}`,
-        label: failed ? `Failed: ${label}` : label,
+        label,
         path,
         targetPath,
         status: tool.status,

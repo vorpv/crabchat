@@ -1074,22 +1074,43 @@ function isToolResultPart(type: string | undefined) {
   return type === "tool_result" || type === "tool-result" || type === "toolResult"
 }
 
+function getFailedToolPayload(output: string) {
+  if (!output.trim()) return undefined
+
+  try {
+    const parsed = asRecord(JSON.parse(output))
+    const status = asString(parsed?.status)?.toLowerCase()
+    if (["failed", "failure", "error", "errored", "cancelled", "canceled"].includes(status || "")) {
+      return parsed
+    }
+    if (parsed?.ok === false || parsed?.success === false || parsed?.isError === true) {
+      return parsed
+    }
+  } catch {
+    return undefined
+  }
+
+  return undefined
+}
+
 function normalizeToolCall(part: GatewayFrame, index: number): ToolCall {
   const result = asRecord(part.result)
-  const isError =
-    part.error === true ||
-    part.isError === true ||
-    result?.error === true ||
-    typeof part.error === "string"
   const output =
     asString(part.output) ||
     asString(result?.text) ||
     asString(result?.output) ||
     extractTextPart(part)
+  const failedPayload = getFailedToolPayload(output)
+  const isError =
+    part.error === true ||
+    part.isError === true ||
+    result?.error === true ||
+    Boolean(failedPayload) ||
+    typeof part.error === "string"
   const error =
     typeof part.error === "string"
       ? part.error
-      : asString(result?.error) || (isError ? output : undefined)
+      : asString(result?.error) || asString(failedPayload?.error) || (isError ? output : undefined)
   return {
     id: getToolCallId(part) || `tool-${index}`,
     name: asString(part.name) || asString(part.toolName) || asString(part.tool) || "tool",
@@ -1138,6 +1159,79 @@ function normalizeMessage(raw: unknown, index: number): Message | undefined {
 
   const content = asString(item.text) || asString(item.message) || asString(item.content) || textParts.join("\n\n")
   const rawAttachments = Array.isArray(item.attachments) ? item.attachments : []
+  const rawUsage = asRecord(item.usage)
+  const rawUsageContext = asRecord(rawUsage?.context)
+  const rawContextWindow = asRecord(item.contextWindow) || asRecord(item.context_window)
+  const usage = {
+    inputTokens: asNumber(
+      rawUsage?.input ??
+        rawUsage?.inputTokens ??
+        rawUsage?.input_tokens ??
+        item.inputTokens ??
+        item.input_tokens
+    ),
+    outputTokens: asNumber(
+      rawUsage?.output ??
+        rawUsage?.outputTokens ??
+        rawUsage?.output_tokens ??
+        item.outputTokens ??
+        item.output_tokens
+    ),
+    totalTokens: asNumber(
+      rawUsage?.totalTokens ??
+        rawUsage?.total_tokens ??
+        rawUsage?.total ??
+        item.totalTokens ??
+        item.total_tokens
+    ),
+    contextTokens: asNumber(
+      rawUsage?.contextTokens ??
+        rawUsage?.context_tokens ??
+        rawUsage?.usedContextTokens ??
+        rawUsage?.used_context_tokens ??
+        rawUsage?.totalTokens ??
+        rawUsage?.total_tokens ??
+        rawUsage?.total ??
+        item.contextTokens ??
+        item.context_tokens ??
+        item.totalTokens ??
+        item.total_tokens
+    ),
+    contextCapacityTokens: asNumber(
+      rawUsage?.contextCapacityTokens ??
+        rawUsage?.context_capacity_tokens ??
+        rawUsageContext?.capacityTokens ??
+        rawUsageContext?.capacity_tokens ??
+        rawContextWindow?.capacityTokens ??
+        rawContextWindow?.capacity_tokens ??
+        item.contextCapacityTokens ??
+        item.context_capacity_tokens
+    ),
+    contextUsagePercent: asNumber(
+      rawUsage?.contextUsagePercent ??
+        rawUsage?.context_usage_percent ??
+        rawUsage?.contextPercent ??
+        rawUsage?.context_percent ??
+        rawUsage?.usagePercent ??
+        rawUsage?.usage_percent ??
+        rawUsageContext?.usagePercent ??
+        rawUsageContext?.usage_percent ??
+        rawUsageContext?.percent ??
+        rawContextWindow?.usagePercent ??
+        rawContextWindow?.usage_percent ??
+        rawContextWindow?.percent ??
+        item.contextUsagePercent ??
+        item.context_usage_percent
+    ),
+    model: asString(item.model) || asString(rawUsage?.model),
+    modelProvider: asString(item.provider) || asString(item.modelProvider) || asString(rawUsage?.provider),
+    reasoningLevel:
+      asString(item.reasoningLevel) ||
+      asString(item.thinkingLevel) ||
+      asString(rawUsage?.reasoningLevel) ||
+      asString(rawUsage?.thinkingLevel),
+  }
+  const hasUsage = Object.values(usage).some((value) => value !== undefined)
 
   const message: Message = {
     id: asString(item.id) || asString(item.messageId) || `message-${index}`,
@@ -1147,6 +1241,7 @@ function normalizeMessage(raw: unknown, index: number): Message | undefined {
     attachments: [...attachments, ...rawAttachments.map(normalizeAttachment).filter(Boolean)] as Attachment[],
     reasoning: reasoningParts.filter(Boolean).join("\n\n") || undefined,
     toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+    usage: hasUsage ? usage : undefined,
   }
 
   const hasVisibleContent = message.content.trim().length > 0
@@ -1184,7 +1279,10 @@ function mergeToolResultMessages(messages: Message[]) {
             ? `${existing.output}\n${result.output}`
             : result.output || existing.output
         existing.error = result.error || existing.error
-        existing.status = result.status
+        existing.status =
+          existing.status === "error" || result.status === "error"
+            ? "error"
+            : result.status
         existing.rawResults = [...(existing.rawResults || []), result.rawCall].filter(Boolean)
         consumed = true
       }

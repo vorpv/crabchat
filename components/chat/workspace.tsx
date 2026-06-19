@@ -57,6 +57,7 @@ const RESPONSE_POLL_TIMEOUT_MS = 120_000
 const defaultSettings: Settings = {
   theme: "system",
   displayChangesSummary: true,
+  displayTokenUsage: false,
 }
 
 interface SentAttachment {
@@ -1017,7 +1018,8 @@ export function ChatWorkspace() {
             workspaceSessionKey={activeSession?.key}
             isResponding={isResponding}
             agentActivity={visibleAgentActivity}
-            displayChangesSummary={settings.displayChangesSummary}
+            settings={settings}
+            onSettingsChange={setSettings}
             gatewayError={statusError}
             onRetryGateway={refreshStatus}
             retryingGateway={retryingStatus}

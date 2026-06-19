@@ -83,6 +83,16 @@ export function SettingsDialog({
                 size="sm"
               />
             </div>
+            <div className="flex items-center justify-between py-1">
+              <span className="text-sm text-muted-foreground">Display token usage</span>
+              <CustomSwitch
+                checked={settings.displayTokenUsage}
+                onCheckedChange={(checked) =>
+                  onSettingsChange({ ...settings, displayTokenUsage: checked })
+                }
+                size="sm"
+              />
+            </div>
           </section>
 
           <Separator className="my-4" />
