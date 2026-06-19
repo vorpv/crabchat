@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react"
 import {
   ArrowLeft,
+  BookOpenText,
   CheckCircle2,
   ChevronRight,
   FileJson2,
@@ -14,8 +15,10 @@ import {
   Settings2,
 } from "lucide-react"
 import {
+  fetchFeatureGuide,
   fetchOpenClawConfig,
   restartOpenClaw,
+  saveCrabChatState,
   saveOpenClawSessionConfig,
 } from "@/lib/client-api"
 import {
@@ -37,6 +40,7 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Separator } from "@/components/ui/separator"
+import { CustomCheckbox } from "@/components/ui/custom-checkbox"
 import { CustomSwitch } from "@/components/ui/custom-switch"
 import { SegmentedControl } from "@/components/ui/segmented-control"
 import {
@@ -47,14 +51,16 @@ import {
 } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import type {
+  CrabChatFeatures,
   OpenClawConfigView,
   OpenClawSessionConfig,
   OpenClawSessionResetConfig,
   Settings,
 } from "@/lib/types"
 
-type SettingsView = "main" | "openclaw"
+type SettingsView = "main" | "openclaw" | "features"
 type ConfigTab = "connection" | "sessions" | "agents"
+type FeatureTab = "archiving"
 type PendingExit = "close" | "back" | null
 type ResetKey = "reset" | "direct" | "group" | "thread"
 
@@ -63,6 +69,8 @@ interface SettingsDialogProps {
   onOpenChange: (open: boolean) => void
   settings: Settings
   onSettingsChange: (settings: Settings) => void
+  features: CrabChatFeatures
+  onFeaturesChange: (features: CrabChatFeatures) => void
 }
 
 interface ResetForm {
@@ -84,6 +92,12 @@ interface SessionConfigForm {
   }
 }
 
+interface FeaturesForm {
+  archiving: {
+    enabled: boolean
+  }
+}
+
 const emptyReset: ResetForm = {
   mode: "",
   atHour: "",
@@ -100,6 +114,12 @@ const emptyForm: SessionConfigForm = {
   maintenance: {
     pruneAfter: "",
     maxEntries: "",
+  },
+}
+
+const defaultFeaturesForm: FeaturesForm = {
+  archiving: {
+    enabled: true,
   },
 }
 
@@ -133,12 +153,20 @@ export function SettingsDialog({
   onOpenChange,
   settings,
   onSettingsChange,
+  features,
+  onFeaturesChange,
 }: SettingsDialogProps) {
   const [view, setView] = useState<SettingsView>("main")
   const [tab, setTab] = useState<ConfigTab>("connection")
+  const [featureTab, setFeatureTab] = useState<FeatureTab>("archiving")
   const [config, setConfig] = useState<OpenClawConfigView | null>(null)
   const [form, setForm] = useState<SessionConfigForm>(emptyForm)
   const [savedForm, setSavedForm] = useState<SessionConfigForm>(emptyForm)
+  const [featureForm, setFeatureForm] = useState<FeaturesForm>(defaultFeaturesForm)
+  const [savedFeatureForm, setSavedFeatureForm] = useState<FeaturesForm>(defaultFeaturesForm)
+  const [featureGuide, setFeatureGuide] = useState("")
+  const [loadingFeatureGuide, setLoadingFeatureGuide] = useState(false)
+  const [featureError, setFeatureError] = useState<string | null>(null)
   const [loadingConfig, setLoadingConfig] = useState(false)
   const [saving, setSaving] = useState(false)
   const [configError, setConfigError] = useState<string | null>(null)
@@ -147,18 +175,28 @@ export function SettingsDialog({
   const [restarting, setRestarting] = useState(false)
   const [restartError, setRestartError] = useState<string | null>(null)
 
-  const dirty = useMemo(
+  const openClawDirty = useMemo(
     () => JSON.stringify(form) !== JSON.stringify(savedForm),
     [form, savedForm]
   )
+  const featuresDirty = useMemo(
+    () => JSON.stringify(featureForm) !== JSON.stringify(savedFeatureForm),
+    [featureForm, savedFeatureForm]
+  )
+  const dirty = view === "openclaw" ? openClawDirty : view === "features" ? featuresDirty : false
   const validation = useMemo(() => validateSessionForm(form), [form])
   const sessionPreview = useMemo(() => formToSessionConfig(form), [form])
-  const saveDisabled = !dirty || validation.length > 0 || saving || loadingConfig
+  const featurePreview = useMemo(() => featureFormToConfig(featureForm), [featureForm])
+  const saveDisabled =
+    view === "openclaw"
+      ? !dirty || validation.length > 0 || saving || loadingConfig
+      : !dirty || saving
 
   useEffect(() => {
     if (!open) {
       setView("main")
       setTab("connection")
+      setFeatureTab("archiving")
       setPendingExit(null)
     }
   }, [open])
@@ -181,12 +219,45 @@ export function SettingsDialog({
     }
   }
 
+  const loadFeatures = () => {
+    const nextForm = featuresToForm(features)
+    setFeatureForm(nextForm)
+    setSavedFeatureForm(nextForm)
+    setFeatureError(null)
+    setFeatureTab("archiving")
+    setView("features")
+  }
+
+  useEffect(() => {
+    if (view !== "features") return
+
+    let cancelled = false
+    setLoadingFeatureGuide(true)
+    setFeatureError(null)
+    fetchFeatureGuide("session-archiving")
+      .then((payload) => {
+        if (!cancelled) setFeatureGuide(payload.markdown)
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setFeatureError(error instanceof Error ? error.message : "Could not load feature guide")
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingFeatureGuide(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [view])
+
   const requestClose = (nextOpen: boolean) => {
     if (nextOpen) {
       onOpenChange(true)
       return
     }
-    if (view === "openclaw" && dirty) {
+    if (view !== "main" && dirty) {
       setPendingExit("close")
       return
     }
@@ -204,13 +275,31 @@ export function SettingsDialog({
   const discardPendingExit = () => {
     const action = pendingExit
     setPendingExit(null)
-    setForm(savedForm)
+    if (view === "openclaw") setForm(savedForm)
+    if (view === "features") setFeatureForm(savedFeatureForm)
     if (action === "back") setView("main")
     if (action === "close") onOpenChange(false)
   }
 
   const handleSave = async () => {
     if (saveDisabled) return
+    if (view === "features") {
+      setSaving(true)
+      setFeatureError(null)
+      try {
+        const next = await saveCrabChatState({ features: featurePreview })
+        const nextForm = featuresToForm(next.features)
+        onFeaturesChange(next.features)
+        setFeatureForm(nextForm)
+        setSavedFeatureForm(nextForm)
+      } catch (error) {
+        setFeatureError(error instanceof Error ? error.message : "Could not save features")
+      } finally {
+        setSaving(false)
+      }
+      return
+    }
+
     setSaving(true)
     setConfigError(null)
     try {
@@ -265,32 +354,43 @@ export function SettingsDialog({
 
       <Dialog open={open} onOpenChange={requestClose}>
         <DialogContent
-          showCloseButton={view !== "openclaw"}
+          showCloseButton={view === "main"}
           className={cn(
             "max-h-[90vh] w-full overflow-hidden p-0",
-            view === "openclaw"
+            view !== "main"
               ? "max-w-[calc(100vw-2rem)] sm:max-w-[64rem]"
               : "max-w-[calc(100vw-2rem)] sm:max-w-md"
           )}
         >
           <DialogHeader className="border-b border-border px-4 py-3">
-            {view === "openclaw" ? (
+            {view !== "main" ? (
               <div className="grid grid-cols-[auto_1fr_auto] items-center gap-3">
                 <Button variant="ghost" size="icon-sm" onClick={requestBack} title="Back">
                   <ArrowLeft className="h-4 w-4" />
                 </Button>
-                <DialogTitle className="sr-only">OpenClaw configuration</DialogTitle>
+                <DialogTitle className="sr-only">
+                  {view === "openclaw" ? "OpenClaw configuration" : "Features"}
+                </DialogTitle>
                 <div className="flex justify-center">
-                  <SegmentedControl
-                    value={tab}
-                    onValueChange={(value) => setTab(value as ConfigTab)}
-                    options={[
-                      { value: "connection", label: "Connection" },
-                      { value: "sessions", label: "Sessions" },
-                      { value: "agents", label: "Agents" },
-                    ]}
-                    size="sm"
-                  />
+                  {view === "openclaw" ? (
+                    <SegmentedControl
+                      value={tab}
+                      onValueChange={(value) => setTab(value as ConfigTab)}
+                      options={[
+                        { value: "connection", label: "Connection" },
+                        { value: "sessions", label: "Sessions" },
+                        { value: "agents", label: "Agents" },
+                      ]}
+                      size="sm"
+                    />
+                  ) : (
+                    <SegmentedControl
+                      value={featureTab}
+                      onValueChange={(value) => setFeatureTab(value as FeatureTab)}
+                      options={[{ value: "archiving", label: "Archiving" }]}
+                      size="sm"
+                    />
+                  )}
                 </div>
                 <Button size="sm" onClick={handleSave} disabled={saveDisabled}>
                   {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
@@ -319,10 +419,20 @@ export function SettingsDialog({
               sessionPreview={sessionPreview}
               onFormChange={setForm}
             />
+          ) : view === "features" ? (
+            <FeaturesPanel
+              form={featureForm}
+              guide={featureGuide}
+              loadingGuide={loadingFeatureGuide}
+              error={featureError}
+              preview={featurePreview}
+              onFormChange={setFeatureForm}
+            />
           ) : (
             <MainSettings
               settings={settings}
               onSettingsChange={onSettingsChange}
+              onOpenFeatures={loadFeatures}
               onOpenOpenClaw={loadConfig}
             />
           )}
@@ -334,7 +444,7 @@ export function SettingsDialog({
           <AlertDialogHeader>
             <AlertDialogTitle>Discard unsaved changes?</AlertDialogTitle>
             <AlertDialogDescription>
-              Your OpenClaw configuration changes have not been saved.
+              Your configuration changes have not been saved.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -352,10 +462,12 @@ export function SettingsDialog({
 function MainSettings({
   settings,
   onSettingsChange,
+  onOpenFeatures,
   onOpenOpenClaw,
 }: {
   settings: Settings
   onSettingsChange: (settings: Settings) => void
+  onOpenFeatures: () => void
   onOpenOpenClaw: () => void
 }) {
   return (
@@ -416,7 +528,7 @@ function MainSettings({
           icon={FlaskConical}
           title="Features"
           description="Configure CrabChat features, like Diffs, Session history or Summaries"
-          onClick={() => undefined}
+          onClick={onOpenFeatures}
         />
         <SettingsCard
           icon={ServerCog}
@@ -565,6 +677,168 @@ function ConfigEditorShell({
       </div>
     </div>
   )
+}
+
+function FeaturesPanel({
+  form,
+  guide,
+  loadingGuide,
+  error,
+  onFormChange,
+}: {
+  form: FeaturesForm
+  guide: string
+  loadingGuide: boolean
+  error: string | null
+  preview: CrabChatFeatures
+  onFormChange: (form: FeaturesForm) => void
+}) {
+  return (
+    <div className="grid h-[72vh] min-h-0 grid-cols-[minmax(0,1fr)_minmax(340px,0.9fr)]">
+      <div className="min-h-0 overflow-y-auto p-4 custom-scrollbar">
+        <section className="space-y-4">
+          <div>
+            <h3 className="text-sm font-medium text-foreground">Session Archiving</h3>
+            <p className="mt-1 text-xs leading-5 text-muted-foreground">
+              Keep local copies of sessions that disappear from OpenClaw so they remain visible as archived history.
+            </p>
+          </div>
+
+          <label className="flex items-start gap-3 rounded-lg border border-border bg-muted/10 p-3">
+            <CustomCheckbox
+              className="mt-0.5"
+              checked={form.archiving.enabled}
+              onCheckedChange={(checked) =>
+                onFormChange({
+                  ...form,
+                  archiving: {
+                    ...form.archiving,
+                    enabled: checked === true,
+                  },
+                })
+              }
+            />
+            <span className="min-w-0">
+              <span className="block text-sm font-medium text-foreground">Enable archiving</span>
+              <span className="mt-1 block text-xs leading-5 text-muted-foreground">
+                When enabled, locally known sessions that are no longer returned by OpenClaw are moved into the archive instead of disappearing from CrabChat.
+              </span>
+            </span>
+          </label>
+
+          {error && (
+            <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+              {error}
+            </div>
+          )}
+        </section>
+      </div>
+
+      <div className="min-h-0 border-l border-border bg-muted/10">
+        <div className="flex h-9 items-center gap-2 border-b border-border px-3 text-xs font-medium text-muted-foreground">
+          <BookOpenText className="h-3.5 w-3.5" />
+          Feature guide
+        </div>
+        <div className="h-[calc(72vh-2.25rem)] overflow-auto p-4 custom-scrollbar">
+          {loadingGuide ? (
+            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              Loading guide
+            </div>
+          ) : (
+            <MarkdownGuide markdown={guide} />
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function MarkdownGuide({ markdown }: { markdown: string }) {
+  const lines = markdown.split("\n")
+  const blocks: React.ReactNode[] = []
+  let paragraph: string[] = []
+  let list: string[] = []
+
+  const flushParagraph = () => {
+    if (paragraph.length === 0) return
+    blocks.push(
+      <p key={`p-${blocks.length}`} className="text-sm leading-6 text-muted-foreground">
+        {renderInline(paragraph.join(" "))}
+      </p>
+    )
+    paragraph = []
+  }
+
+  const flushList = () => {
+    if (list.length === 0) return
+    blocks.push(
+      <ul key={`ul-${blocks.length}`} className="ml-4 list-disc space-y-1 text-sm leading-6 text-muted-foreground">
+        {list.map((item) => (
+          <li key={item}>{renderInline(item)}</li>
+        ))}
+      </ul>
+    )
+    list = []
+  }
+
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (!trimmed) {
+      flushParagraph()
+      flushList()
+      continue
+    }
+
+    if (trimmed.startsWith("# ")) {
+      flushParagraph()
+      flushList()
+      blocks.push(
+        <h1 key={`h1-${blocks.length}`} className="text-lg font-semibold text-foreground">
+          {renderInline(trimmed.slice(2))}
+        </h1>
+      )
+      continue
+    }
+
+    if (trimmed.startsWith("## ")) {
+      flushParagraph()
+      flushList()
+      blocks.push(
+        <h2 key={`h2-${blocks.length}`} className="pt-2 text-sm font-semibold text-foreground">
+          {renderInline(trimmed.slice(3))}
+        </h2>
+      )
+      continue
+    }
+
+    if (trimmed.startsWith("- ")) {
+      flushParagraph()
+      list.push(trimmed.slice(2))
+      continue
+    }
+
+    flushList()
+    paragraph.push(trimmed)
+  }
+
+  flushParagraph()
+  flushList()
+
+  return <div className="space-y-3">{blocks}</div>
+}
+
+function renderInline(text: string) {
+  return text.split(/(`[^`]+`)/g).map((part, index) => {
+    if (part.startsWith("`") && part.endsWith("`")) {
+      return (
+        <code key={`${part}-${index}`} className="rounded bg-muted px-1 py-0.5 text-xs text-foreground">
+          {part.slice(1, -1)}
+        </code>
+      )
+    }
+    return <span key={`${part}-${index}`}>{part}</span>
+  })
 }
 
 function SessionsTab({
@@ -808,6 +1082,22 @@ function FieldLabel({
       )}
     </span>
   )
+}
+
+function featuresToForm(features: CrabChatFeatures): FeaturesForm {
+  return {
+    archiving: {
+      enabled: features.archiving?.enabled !== false,
+    },
+  }
+}
+
+function featureFormToConfig(form: FeaturesForm): CrabChatFeatures {
+  return {
+    archiving: {
+      enabled: form.archiving.enabled,
+    },
+  }
 }
 
 function formFromSessionConfig(session: OpenClawSessionConfig = {}): SessionConfigForm {

@@ -131,12 +131,16 @@ export async function fetchCrabChatState() {
 }
 
 export async function saveCrabChatState(
-  patch: Partial<Pick<CrabChatState, "settings" | "modelSelection" | "pins">>
+  patch: Partial<Pick<CrabChatState, "settings" | "modelSelection" | "pins" | "features">>
 ) {
   return apiFetch<CrabChatState>("/api/crabchat/state", {
     method: "PATCH",
     body: JSON.stringify(patch),
   })
+}
+
+export async function fetchFeatureGuide(feature: string) {
+  return apiFetch<{ markdown: string }>(`/api/crabchat/features/${feature}/guide`)
 }
 
 export async function fetchOpenClawConfig() {

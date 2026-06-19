@@ -26,6 +26,7 @@ export async function PATCH(request: Request) {
         settings: body.settings,
         modelSelection: body.modelSelection,
         pins: body.pins,
+        features: body.features,
       })
     )
   } catch (error) {

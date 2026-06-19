@@ -35,6 +35,7 @@ import type {
   AgentActivity,
   Attachment,
   ContextWindowStatus,
+  CrabChatFeatures,
   Message,
   ModelOption,
   ModelReasoningSelection,
@@ -55,6 +56,12 @@ const defaultSettings: Settings = {
   theme: "system",
   displayChangesSummary: true,
   displayTokenUsage: false,
+}
+
+const defaultFeatures: CrabChatFeatures = {
+  archiving: {
+    enabled: true,
+  },
 }
 
 interface SentAttachment {
@@ -268,6 +275,7 @@ export function ChatWorkspace() {
   const [sessionToModify, setSessionToModify] = useState<Session | null>(null)
 
   const [settings, setSettings] = useState<Settings>(defaultSettings)
+  const [features, setFeatures] = useState<CrabChatFeatures>(defaultFeatures)
   const pendingSessionPatchRef = useRef(new Map<string, Promise<Session>>())
   const crabStateLoadedRef = useRef(false)
 
@@ -536,6 +544,7 @@ export function ChatWorkspace() {
       .then((state) => {
         if (cancelled) return
         setSettings({ ...defaultSettings, ...state.settings })
+        setFeatures({ ...defaultFeatures, ...state.features })
         setPinnedIds(new Set(state.pins))
         setModelSelection({
           model: state.modelSelection.model || "",
@@ -1060,6 +1069,8 @@ export function ChatWorkspace() {
         onOpenChange={setSettingsOpen}
         settings={settings}
         onSettingsChange={setSettings}
+        features={features}
+        onFeaturesChange={setFeatures}
       />
 
       <SearchDialog

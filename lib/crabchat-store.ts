@@ -24,18 +24,13 @@ import {
 } from "@/lib/openclaw-gateway"
 import type {
   Attachment,
+  CrabChatFeatures,
   Message,
   ModelReasoningSelection,
   Session,
   SessionDefaults,
   Settings,
 } from "@/lib/types"
-
-type CrabChatFeatures = {
-  archiving: {
-    enabled: boolean
-  }
-}
 
 type StoredSession = {
   version: 1
@@ -253,6 +248,7 @@ export function updateCrabChatState(patch: {
   settings?: Settings
   modelSelection?: ModelReasoningSelection
   pins?: string[]
+  features?: Partial<CrabChatFeatures>
 }) {
   const p = ensureHome()
   const current = readCrabChatConfig()
@@ -266,6 +262,12 @@ export function updateCrabChatState(patch: {
   }
   writeCrabChatConfig(next)
   if (patch.pins) writeJson(p.pins, patch.pins)
+  if (patch.features) {
+    writeJson(p.features, {
+      ...readFeatures(),
+      ...patch.features,
+    })
+  }
   return getCrabChatState()
 }
 
