@@ -118,6 +118,35 @@ export interface Settings {
   displayTokenUsage: boolean
 }
 
+export interface OpenClawSessionResetConfig {
+  mode?: "daily" | "idle"
+  atHour?: number
+  idleMinutes?: number
+}
+
+export interface OpenClawSessionConfig {
+  scope?: "per-sender" | "global"
+  dmScope?: "main" | "per-peer" | "per-channel-peer" | "per-account-channel-peer"
+  reset?: OpenClawSessionResetConfig
+  resetByType?: {
+    direct?: OpenClawSessionResetConfig
+    group?: OpenClawSessionResetConfig
+    thread?: OpenClawSessionResetConfig
+  }
+  maintenance?: {
+    pruneAfter?: string | number
+    maxEntries?: number
+  }
+}
+
+export interface OpenClawConfigView {
+  connection: {
+    url: string
+    password: string
+  }
+  session: OpenClawSessionConfig
+}
+
 export interface ProviderUsageWindow {
   label: string
   usedPercent: number

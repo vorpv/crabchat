@@ -5,6 +5,8 @@ import type {
   Attachment,
   Message,
   ModelOption,
+  OpenClawConfigView,
+  OpenClawSessionConfig,
   Session,
   SessionDefaults,
   Settings,
@@ -120,6 +122,24 @@ export async function fetchModels() {
 
 export async function fetchUsageStatus() {
   return apiFetch<UsageStatus>("/api/openclaw/usage")
+}
+
+export async function fetchOpenClawConfig() {
+  return apiFetch<OpenClawConfigView>("/api/openclaw/config")
+}
+
+export async function saveOpenClawSessionConfig(session: OpenClawSessionConfig) {
+  return apiFetch<OpenClawConfigView>("/api/openclaw/config", {
+    method: "PATCH",
+    body: JSON.stringify({ session }),
+  })
+}
+
+export async function restartOpenClaw() {
+  return apiFetch<{ ok: true; stdout?: string; stderr?: string }>("/api/openclaw/config", {
+    method: "POST",
+    body: JSON.stringify({ action: "restart" }),
+  })
 }
 
 export async function createSession(label?: string, agentId?: string) {
