@@ -10,6 +10,16 @@ These instructions apply to all source contributors and coding agents working in
 - Expanding class inheritance, composition, or other local abstractions is allowed when it reduces file size, duplication, or conceptual overload.
 - Avoid unrelated rewrites. Refactor only the code needed to keep the requested change maintainable.
 
+## Regression Tests
+
+- New behavior and bug fixes should include regression coverage unless the change is purely cosmetic, documentation-only, or otherwise not meaningfully testable.
+- Keep tests proportional to the risk and scope of the change. Prefer small unit tests for pure logic, temporary-directory filesystem tests for `CRABCHAT_HOME` behavior, API handler tests for route contracts, and component interaction tests for UI behavior.
+- When adding logic inside large UI components, prefer extracting deterministic helpers, hooks, or services so the behavior can be tested without mounting the whole application.
+- Do not rely on real OpenClaw, real user data, or a developer's default `CRABCHAT_HOME` in the light test suite. Use mocks and isolated temporary directories for normal regression tests.
+- Heavy tests that require a real OpenClaw gateway should be clearly separated from normal test scripts and guarded by explicit environment variables or dedicated commands.
+- If a meaningful test cannot be added, explain why in the task summary and mention what manual verification was performed instead.
+- Run the relevant test command before finishing a code change. For broad changes, prefer `npm test`; for release-oriented checks, prefer `npm run check` when the environment can support a production build.
+
 ## External Libraries
 
 - For large requested features, first check whether a mature external library already solves the core problem.
