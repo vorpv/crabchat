@@ -19,6 +19,7 @@ describe("crabchat home persistence", () => {
       config: `${getHome()}/crabchat.json`,
       pins: `${getHome()}/pins.json`,
       features: `${getHome()}/features.json`,
+      notes: `${getHome()}/notes`,
       sessions: `${getHome()}/sessions`,
       archive: `${getHome()}/sessions/archive`,
     })

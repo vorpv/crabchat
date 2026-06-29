@@ -3,6 +3,9 @@
 import type {
   Agent,
   Attachment,
+  CrabChatNote,
+  CrabChatNoteSaveConflict,
+  CrabChatNotesList,
   CrabChatState,
   Message,
   ModelOption,
@@ -141,6 +144,54 @@ export async function saveCrabChatState(
 
 export async function fetchFeatureGuide(feature: string) {
   return apiFetch<{ markdown: string }>(`/api/crabchat/features/${feature}/guide`)
+}
+
+export async function validateNotesStoragePath(path: string) {
+  const query = new URLSearchParams({ validatePath: path })
+  return apiFetch<{ ok: boolean; path: string; error?: string }>(
+    `/api/crabchat/notes?${query.toString()}`
+  )
+}
+
+function normalizeNote(note: CrabChatNote): CrabChatNote {
+  return {
+    ...note,
+    updatedAt: normalizeDate(note.updatedAt).toISOString(),
+  }
+}
+
+export async function fetchNotes() {
+  const payload = await apiFetch<CrabChatNotesList>("/api/crabchat/notes")
+  return {
+    ...payload,
+    notes: payload.notes.map(normalizeNote),
+  }
+}
+
+export async function saveNote(params: {
+  fileName?: string
+  title?: string
+  agentId?: string
+  content: string
+  kind?: "note" | "prompt"
+  baseContent?: string
+  baseUpdatedAt?: string
+  conflictResolution?: "load" | "overwrite" | "separate"
+}) {
+  const payload = await apiFetch<
+    { note: CrabChatNote } | CrabChatNoteSaveConflict
+  >("/api/crabchat/notes", {
+    method: params.fileName ? "PATCH" : "POST",
+    body: JSON.stringify(params),
+  })
+  return { ...payload, note: normalizeNote(payload.note) }
+}
+
+export async function deleteNote(fileName: string) {
+  return apiFetch<{ ok: true }>("/api/crabchat/notes", {
+    method: "DELETE",
+    body: JSON.stringify({ fileName }),
+  })
 }
 
 export async function fetchOpenClawConfig() {

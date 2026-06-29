@@ -31,6 +31,7 @@ export function getCrabChatPaths() {
     config: `${home}/crabchat.json`,
     pins: `${home}/pins.json`,
     features: `${home}/features.json`,
+    notes: `${home}/notes`,
     sessions: `${home}/sessions`,
     archive: `${home}/sessions/archive`,
   }

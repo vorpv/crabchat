@@ -14,7 +14,6 @@ import {
   AlertCircle,
   FileIcon,
   MoreHorizontal,
-  X,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { AgentStatusIndicator } from "@/components/chat/agent-status"
@@ -44,6 +43,7 @@ interface ChatTranscriptProps {
   gatewayError?: string | null
   onRetryGateway?: () => void
   retryingGateway?: boolean
+  onShowExecutionDetails?: (title: string, toolCalls: ToolCall[]) => void
 }
 
 export function ChatTranscript({
@@ -57,12 +57,9 @@ export function ChatTranscript({
   gatewayError,
   onRetryGateway,
   retryingGateway = false,
+  onShowExecutionDetails,
 }: ChatTranscriptProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
-  const [detailsMessage, setDetailsMessage] = useState<{
-    title: string
-    toolCalls: ToolCall[]
-  } | null>(null)
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -108,21 +105,11 @@ export function ChatTranscript({
             workspaceSessionKey={workspaceSessionKey}
             settings={settings}
             onSettingsChange={onSettingsChange}
-            onShowDetails={(title, toolCalls) => setDetailsMessage({ title, toolCalls })}
+            onShowDetails={(title, toolCalls) => onShowExecutionDetails?.(title, toolCalls)}
           />
         ))}
-        {isResponding && (
-          <LiveExecutionDetails messages={messages} activity={agentActivity} />
-        )}
         {isResponding && <TypingIndicator activity={agentActivity} />}
       </div>
-      {detailsMessage && (
-        <ExecutionDetailsPanel
-          title={detailsMessage.title}
-          toolCalls={detailsMessage.toolCalls}
-          onClose={() => setDetailsMessage(null)}
-        />
-      )}
     </div>
   )
 }
@@ -426,63 +413,12 @@ function getResponseToolCalls(messages: Message[], index: number) {
   return messages.slice(start, index + 1).flatMap((message) => message.toolCalls || [])
 }
 
-function getCurrentResponseToolCalls(messages: Message[]) {
+export function getCurrentResponseToolCalls(messages: Message[]) {
   const lastUserIndex = [...messages].map((message, index) => ({ message, index }))
     .reverse()
     .find((entry) => entry.message.role === "user")?.index
   if (lastUserIndex === undefined) return []
   return messages.slice(lastUserIndex + 1).flatMap((message) => message.toolCalls || [])
-}
-
-function LiveExecutionDetails({
-  messages,
-  activity,
-}: {
-  messages: Message[]
-  activity?: AgentActivity | null
-}) {
-  const toolCalls = getCurrentResponseToolCalls(messages)
-  if (toolCalls.length === 0) return null
-
-  return (
-    <div className="rounded-lg border border-border bg-muted/20 px-3 py-2">
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <span className="text-xs font-medium text-muted-foreground">Execution details</span>
-        {activity?.active && (
-          <span className="truncate text-xs text-muted-foreground">{activity.label}</span>
-        )}
-      </div>
-      <ExecutionDetails toolCalls={toolCalls} compact />
-    </div>
-  )
-}
-
-function ExecutionDetailsPanel({
-  title,
-  toolCalls,
-  onClose,
-}: {
-  title: string
-  toolCalls: ToolCall[]
-  onClose: () => void
-}) {
-  return (
-    <aside className="fixed inset-y-0 right-0 z-40 flex w-full max-w-md flex-col border-l border-border bg-background shadow-xl">
-      <div className="flex items-center justify-between border-b border-border px-4 py-3">
-        <h2 className="text-sm font-medium text-foreground">{title}</h2>
-        <button
-          onClick={onClose}
-          className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-          title="Close"
-        >
-          <X className="h-4 w-4" />
-        </button>
-      </div>
-      <div className="min-h-0 flex-1 overflow-y-auto p-3 custom-scrollbar">
-        <ExecutionDetails toolCalls={toolCalls} />
-      </div>
-    </aside>
-  )
 }
 
 function TypingIndicator({ activity }: { activity?: AgentActivity | null }) {

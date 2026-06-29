@@ -1,12 +1,16 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import type React from "react"
 import hljs from "highlight.js/lib/core"
 import bash from "highlight.js/lib/languages/bash"
 import { ChatSidebar } from "@/components/chat/sidebar"
 import { ChatHeader } from "@/components/chat/header"
-import { ChatTranscript } from "@/components/chat/transcript"
+import { ChatTranscript, getCurrentResponseToolCalls } from "@/components/chat/transcript"
 import { ChatComposer } from "@/components/chat/composer"
+import { NotesBlock } from "@/components/chat/notes-block"
+import { CrabChatPanel, type CrabChatPanelBlock } from "@/components/chat/right-panel"
+import { ExecutionDetails } from "@/components/chat/execution-details"
 import { SettingsDialog } from "@/components/chat/settings-dialog"
 import { SearchDialog } from "@/components/chat/search-dialog"
 import { RenameDialog } from "@/components/chat/rename-dialog"
@@ -27,7 +31,9 @@ import {
   patchSessionPreferences,
   removeSession,
   renameSession,
+  deleteNote,
   saveCrabChatState,
+  saveNote,
   sendChatMessage,
 } from "@/lib/client-api"
 import {
@@ -50,6 +56,7 @@ import type {
   Attachment,
   ContextWindowStatus,
   CrabChatFeatures,
+  CrabChatNote,
   Message,
   ModelOption,
   ModelReasoningSelection,
@@ -58,6 +65,7 @@ import type {
   SessionDefaults,
   Settings,
   ThinkingLevelOption,
+  ToolCall,
   UsageStatus,
 } from "@/lib/types"
 
@@ -75,6 +83,13 @@ const defaultSettings: Settings = {
 const defaultFeatures: CrabChatFeatures = {
   archiving: {
     enabled: true,
+  },
+  notes: {
+    enabled: true,
+    autoSavePrompts: true,
+    manualPromptSaving: false,
+    useMonospaceFont: false,
+    storagePath: "",
   },
 }
 
@@ -108,6 +123,14 @@ export function ChatWorkspace() {
   const [retryingStatus, setRetryingStatus] = useState(false)
   const [setupRequired, setSetupRequired] = useState(false)
   const [loadingSessions, setLoadingSessions] = useState(true)
+  const [composerContent, setComposerContent] = useState("")
+  const [notesOpen, setNotesOpen] = useState(false)
+  const [notesActions, setNotesActions] = useState<React.ReactNode>(null)
+  const [notesReloadKey, setNotesReloadKey] = useState(0)
+  const [executionDetails, setExecutionDetails] = useState<{
+    title: string
+    toolCalls: ToolCall[]
+  } | null>(null)
 
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
@@ -119,8 +142,13 @@ export function ChatWorkspace() {
   const [features, setFeatures] = useState<CrabChatFeatures>(defaultFeatures)
   const pendingSessionPatchRef = useRef(new Map<string, Promise<Session>>())
   const crabStateLoadedRef = useRef(false)
+  const promptDraftRef = useRef<CrabChatNote | null>(null)
 
   const activeSession = sessions.find((session) => session.id === activeSessionId)
+  const activeAgentId =
+    activeSessionId === NEW_CHAT_ID
+      ? newSessionAgentId || sessionDefaults.defaultAgentId || agents[0]?.id
+      : activeSession?.agentId
   const activeThinkingLevels = useMemo(() => {
     if (activeSessionId === NEW_CHAT_ID) {
       const selectedAgentId =
@@ -687,6 +715,74 @@ export function ChatWorkspace() {
     }
   }
 
+  useEffect(() => {
+    if (!features.notes?.enabled || !features.notes.autoSavePrompts) return
+    if (setupRequired) return
+
+    const content = composerContent.trim()
+    const existingDraft = promptDraftRef.current
+    if (!content) {
+      if (isResponding) return
+      if (existingDraft) {
+        promptDraftRef.current = null
+        void deleteNote(existingDraft.fileName).catch(() => undefined)
+      }
+      return
+    }
+
+    const timeout = window.setTimeout(async () => {
+      try {
+        const result = await saveNote({
+          fileName: promptDraftRef.current?.fileName,
+          title: "untitled",
+          agentId: activeAgentId,
+          content,
+          kind: "prompt",
+          baseContent: promptDraftRef.current?.content,
+          baseUpdatedAt: promptDraftRef.current?.updatedAt,
+          conflictResolution: "overwrite",
+        })
+        if (!("conflict" in result)) {
+          promptDraftRef.current = result.note
+        }
+      } catch {
+        // Draft persistence should not block chat input.
+      }
+    }, 500)
+
+    return () => window.clearTimeout(timeout)
+  }, [activeAgentId, composerContent, features.notes?.autoSavePrompts, features.notes?.enabled, isResponding, setupRequired])
+
+  const savePromptAsNote = async (content: string) => {
+    const text = content.trim()
+    if (!text || !features.notes?.enabled) return
+    try {
+      const result = await saveNote({
+        title: text.slice(0, 48),
+        agentId: activeAgentId,
+        content: text,
+        kind: "note",
+      })
+      if (!("conflict" in result) && promptDraftRef.current) {
+        await deleteNote(promptDraftRef.current.fileName).catch(() => undefined)
+        promptDraftRef.current = null
+      }
+      setNotesOpen(true)
+      setNotesReloadKey((current) => current + 1)
+    } catch (error) {
+      setStatusError(error instanceof Error ? error.message : "Could not save prompt as note")
+    }
+  }
+
+  const handleToPrompt = useCallback((text: string) => {
+    setComposerContent(text)
+  }, [])
+
+  const handleShowExecutionDetails = useCallback((title: string, toolCalls: ToolCall[] = []) => {
+    if (!toolCalls || toolCalls.length === 0) return
+    setExecutionDetails({ title, toolCalls })
+  }, [])
+
   const handleSendMessage = async (content: string, attachments?: SentAttachment[]) => {
     if (isResponding) return
     if (activeSession?.archived) {
@@ -789,6 +885,12 @@ export function ChatWorkspace() {
         attachments: validAttachments,
       })
 
+      if (promptDraftRef.current) {
+        const draft = promptDraftRef.current
+        promptDraftRef.current = null
+        void deleteNote(draft.fileName).catch(() => undefined)
+      }
+
       setHistoryCache((cache) => ({
         ...cache,
         [sessionId]: (cache[sessionId] ?? []).map((message) =>
@@ -814,7 +916,9 @@ export function ChatWorkspace() {
     } catch (error) {
       if (isMissingAuth(error)) {
         applyMissingAuth()
+        setComposerContent(trimmedContent)
       } else {
+        setComposerContent(trimmedContent)
         setHistoryCache((cache) => ({
           ...cache,
           [optimisticSessionId]: (cache[optimisticSessionId] ?? []).map((message) =>
@@ -831,6 +935,61 @@ export function ChatWorkspace() {
       }
       setIsResponding(false)
     }
+  }
+
+  useEffect(() => {
+    if (!isResponding) return
+    const toolCalls = getCurrentResponseToolCalls(activeMessages)
+    if (toolCalls.length === 0) return
+    setExecutionDetails({ title: "Execution details", toolCalls })
+  }, [activeMessages, isResponding])
+
+  const panelBlocks = useMemo<CrabChatPanelBlock[]>(() => {
+    const blocks: CrabChatPanelBlock[] = []
+    if (executionDetails?.toolCalls?.length) {
+      blocks.push({
+        id: "execution-details",
+        title: executionDetails.title,
+        content: (
+          <div className="h-full overflow-y-auto p-3 custom-scrollbar">
+            <ExecutionDetails toolCalls={executionDetails.toolCalls} />
+          </div>
+        ),
+      })
+    }
+    if (features.notes?.enabled && notesOpen) {
+      blocks.push({
+        id: "notes",
+        title: "Notes",
+        actions: notesActions,
+        content: (
+          <NotesBlock
+            agents={agents}
+            currentAgentId={activeAgentId}
+            reloadKey={notesReloadKey}
+            useMonospaceFont={features.notes.useMonospaceFont}
+            onToPrompt={handleToPrompt}
+            onActionsChange={setNotesActions}
+          />
+        ),
+      })
+    }
+    return blocks
+  }, [
+    activeAgentId,
+    agents,
+    executionDetails,
+    features.notes?.enabled,
+    features.notes?.useMonospaceFont,
+    handleToPrompt,
+    notesReloadKey,
+    notesActions,
+    notesOpen,
+  ])
+
+  const closePanelBlock = (id: string) => {
+    if (id === "notes") setNotesOpen(false)
+    if (id === "execution-details") setExecutionDetails(null)
   }
 
   return (
@@ -869,6 +1028,8 @@ export function ChatWorkspace() {
             agentActivity={visibleAgentActivity}
             onOpenSidebar={() => setSidebarExpanded(true)}
             sidebarExpanded={sidebarExpanded}
+            notesEnabled={features.notes?.enabled}
+            onOpenNotes={() => setNotesOpen(true)}
             onExport={(format) =>
               exportConversation(
                 format,
@@ -889,6 +1050,7 @@ export function ChatWorkspace() {
             gatewayError={statusError}
             onRetryGateway={refreshStatus}
             retryingGateway={retryingStatus}
+            onShowExecutionDetails={handleShowExecutionDetails}
           />
 
           <ChatComposer
@@ -899,8 +1061,13 @@ export function ChatWorkspace() {
             selection={modelSelection}
             onModelSelect={handleModelSelect}
             onReasoningSelect={handleReasoningSelect}
+            contentValue={composerContent}
+            onContentChange={setComposerContent}
+            manualPromptSaving={features.notes?.enabled && features.notes.manualPromptSaving}
+            onSavePrompt={savePromptAsNote}
           />
         </div>
+        <CrabChatPanel blocks={panelBlocks} onCloseBlock={closePanelBlock} />
       </div>
 
       {setupRequired && <ConnectionSetupDialog onRetry={loadSessionList} />}

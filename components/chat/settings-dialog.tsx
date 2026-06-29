@@ -20,6 +20,7 @@ import {
   restartOpenClaw,
   saveCrabChatState,
   saveOpenClawSessionConfig,
+  validateNotesStoragePath,
 } from "@/lib/client-api"
 import {
   AlertDialog,
@@ -60,7 +61,7 @@ import type {
 
 type SettingsView = "main" | "openclaw" | "features"
 type ConfigTab = "connection" | "sessions" | "agents"
-type FeatureTab = "archiving"
+type FeatureTab = "archiving" | "notes"
 type PendingExit = "close" | "back" | null
 type ResetKey = "reset" | "direct" | "group" | "thread"
 
@@ -96,6 +97,13 @@ interface FeaturesForm {
   archiving: {
     enabled: boolean
   }
+  notes: {
+    enabled: boolean
+    autoSavePrompts: boolean
+    manualPromptSaving: boolean
+    useMonospaceFont: boolean
+    storagePath: string
+  }
 }
 
 const emptyReset: ResetForm = {
@@ -120,6 +128,13 @@ const emptyForm: SessionConfigForm = {
 const defaultFeaturesForm: FeaturesForm = {
   archiving: {
     enabled: true,
+  },
+  notes: {
+    enabled: true,
+    autoSavePrompts: true,
+    manualPromptSaving: false,
+    useMonospaceFont: false,
+    storagePath: "",
   },
 }
 
@@ -167,6 +182,8 @@ export function SettingsDialog({
   const [featureGuide, setFeatureGuide] = useState("")
   const [loadingFeatureGuide, setLoadingFeatureGuide] = useState(false)
   const [featureError, setFeatureError] = useState<string | null>(null)
+  const [notesPathError, setNotesPathError] = useState<string | null>(null)
+  const [validatingNotesPath, setValidatingNotesPath] = useState(false)
   const [loadingConfig, setLoadingConfig] = useState(false)
   const [saving, setSaving] = useState(false)
   const [configError, setConfigError] = useState<string | null>(null)
@@ -190,7 +207,7 @@ export function SettingsDialog({
   const saveDisabled =
     view === "openclaw"
       ? !dirty || validation.length > 0 || saving || loadingConfig
-      : !dirty || saving
+      : !dirty || saving || validatingNotesPath || Boolean(notesPathError)
 
   useEffect(() => {
     if (!open) {
@@ -224,6 +241,7 @@ export function SettingsDialog({
     setFeatureForm(nextForm)
     setSavedFeatureForm(nextForm)
     setFeatureError(null)
+    setNotesPathError(null)
     setFeatureTab("archiving")
     setView("features")
   }
@@ -234,7 +252,7 @@ export function SettingsDialog({
     let cancelled = false
     setLoadingFeatureGuide(true)
     setFeatureError(null)
-    fetchFeatureGuide("session-archiving")
+    fetchFeatureGuide(featureTab === "notes" ? "notes" : "session-archiving")
       .then((payload) => {
         if (!cancelled) setFeatureGuide(payload.markdown)
       })
@@ -250,7 +268,31 @@ export function SettingsDialog({
     return () => {
       cancelled = true
     }
-  }, [view])
+  }, [featureTab, view])
+
+  useEffect(() => {
+    if (view !== "features") return
+
+    let cancelled = false
+    setValidatingNotesPath(true)
+    const timeout = window.setTimeout(() => {
+      validateNotesStoragePath(featureForm.notes.storagePath)
+        .then((result) => {
+          if (!cancelled) setNotesPathError(result.ok ? null : result.error || "Storage path is invalid.")
+        })
+        .catch((error) => {
+          if (!cancelled) setNotesPathError(error instanceof Error ? error.message : "Storage path is invalid.")
+        })
+        .finally(() => {
+          if (!cancelled) setValidatingNotesPath(false)
+        })
+    }, 250)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(timeout)
+    }
+  }, [featureForm.notes.storagePath, view])
 
   const requestClose = (nextOpen: boolean) => {
     if (nextOpen) {
@@ -387,7 +429,10 @@ export function SettingsDialog({
                     <SegmentedControl
                       value={featureTab}
                       onValueChange={(value) => setFeatureTab(value as FeatureTab)}
-                      options={[{ value: "archiving", label: "Archiving" }]}
+                      options={[
+                        { value: "archiving", label: "Archiving" },
+                        { value: "notes", label: "Notes" },
+                      ]}
                       size="sm"
                     />
                   )}
@@ -427,6 +472,9 @@ export function SettingsDialog({
               error={featureError}
               preview={featurePreview}
               onFormChange={setFeatureForm}
+              tab={featureTab}
+              notesPathError={notesPathError}
+              validatingNotesPath={validatingNotesPath}
             />
           ) : (
             <MainSettings
@@ -685,6 +733,9 @@ function FeaturesPanel({
   loadingGuide,
   error,
   onFormChange,
+  tab,
+  notesPathError,
+  validatingNotesPath,
 }: {
   form: FeaturesForm
   guide: string
@@ -692,46 +743,114 @@ function FeaturesPanel({
   error: string | null
   preview: CrabChatFeatures
   onFormChange: (form: FeaturesForm) => void
+  tab: FeatureTab
+  notesPathError: string | null
+  validatingNotesPath: boolean
 }) {
   return (
     <div className="grid h-[72vh] min-h-0 grid-cols-[minmax(0,1fr)_minmax(340px,0.9fr)]">
       <div className="min-h-0 overflow-y-auto p-4 custom-scrollbar">
-        <section className="space-y-4">
-          <div>
-            <h3 className="text-sm font-medium text-foreground">Session Archiving</h3>
-            <p className="mt-1 text-xs leading-5 text-muted-foreground">
-              Keep local copies of sessions that disappear from OpenClaw so they remain visible as archived history.
-            </p>
-          </div>
+        {tab === "archiving" ? (
+          <section className="space-y-4">
+            <div>
+              <h3 className="text-sm font-medium text-foreground">Session Archiving</h3>
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                Keep local copies of sessions that disappear from OpenClaw so they remain visible as archived history.
+              </p>
+            </div>
 
-          <label className="flex items-start gap-3 rounded-lg border border-border bg-muted/10 p-3">
-            <CustomCheckbox
-              className="mt-0.5"
+            <FeatureCheckbox
               checked={form.archiving.enabled}
-              onCheckedChange={(checked) =>
+              title="Enable archiving"
+              description="When enabled, locally known sessions that are no longer returned by OpenClaw are moved into the archive instead of disappearing from CrabChat."
+              onChange={(enabled) =>
                 onFormChange({
                   ...form,
                   archiving: {
                     ...form.archiving,
-                    enabled: checked === true,
+                    enabled,
                   },
                 })
               }
             />
-            <span className="min-w-0">
-              <span className="block text-sm font-medium text-foreground">Enable archiving</span>
-              <span className="mt-1 block text-xs leading-5 text-muted-foreground">
-                When enabled, locally known sessions that are no longer returned by OpenClaw are moved into the archive instead of disappearing from CrabChat.
-              </span>
-            </span>
-          </label>
-
-          {error && (
-            <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-              {error}
+          </section>
+        ) : (
+          <section className="space-y-4">
+            <div>
+              <h3 className="text-sm font-medium text-foreground">Notes</h3>
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                Save reusable notes and recover unsent prompts from disk-backed note files.
+              </p>
             </div>
-          )}
-        </section>
+
+            <FeatureCheckbox
+              checked={form.notes.enabled}
+              title="Enable Notes"
+              description="Adds the Notes button to the chat header and allows notes to be opened in the right panel."
+              onChange={(enabled) =>
+                onFormChange({ ...form, notes: { ...form.notes, enabled } })
+              }
+            />
+            <FeatureCheckbox
+              checked={form.notes.autoSavePrompts}
+              title="Automatically save unsent prompts as notes"
+              description="Stores current prompt drafts as hidden .prompt files and removes them once OpenClaw accepts the message."
+              onChange={(autoSavePrompts) =>
+                onFormChange({ ...form, notes: { ...form.notes, autoSavePrompts } })
+              }
+            />
+            <FeatureCheckbox
+              checked={form.notes.manualPromptSaving}
+              title="Manual prompt saving button"
+              description="Shows a note button beside Send that saves the current prompt as a note for the current agent."
+              onChange={(manualPromptSaving) =>
+                onFormChange({ ...form, notes: { ...form.notes, manualPromptSaving } })
+              }
+            />
+            <FeatureCheckbox
+              checked={form.notes.useMonospaceFont}
+              title="Use monospace font"
+              description="Uses the configured monospace font in the note editor text area."
+              onChange={(useMonospaceFont) =>
+                onFormChange({ ...form, notes: { ...form.notes, useMonospaceFont } })
+              }
+            />
+            <label className="block space-y-1.5">
+              <span className="flex items-center justify-between gap-2">
+                <FieldLabel
+                  label="Store notes at"
+                  description="Optional absolute folder path. Leave empty to use CRABCHAT_HOME/notes."
+                />
+                {validatingNotesPath && (
+                  <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    Checking
+                  </span>
+                )}
+              </span>
+              <Input
+                value={form.notes.storagePath}
+                placeholder=""
+                onChange={(event) =>
+                  onFormChange({
+                    ...form,
+                    notes: { ...form.notes, storagePath: event.target.value },
+                  })
+                }
+                aria-invalid={Boolean(notesPathError)}
+              />
+              {notesPathError && (
+                <span className="block text-xs text-destructive">{notesPathError}</span>
+              )}
+            </label>
+          </section>
+        )}
+
+        {error && (
+          <div className="mt-4 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+            {error}
+          </div>
+        )}
       </div>
 
       <div className="min-h-0 border-l border-border bg-muted/10">
@@ -751,6 +870,34 @@ function FeaturesPanel({
         </div>
       </div>
     </div>
+  )
+}
+
+function FeatureCheckbox({
+  checked,
+  title,
+  description,
+  onChange,
+}: {
+  checked: boolean
+  title: string
+  description: string
+  onChange: (checked: boolean) => void
+}) {
+  return (
+    <label className="flex items-start gap-3 rounded-lg border border-border bg-muted/10 p-3">
+      <CustomCheckbox
+        className="mt-0.5"
+        checked={checked}
+        onCheckedChange={(next) => onChange(next === true)}
+      />
+      <span className="min-w-0">
+        <span className="block text-sm font-medium text-foreground">{title}</span>
+        <span className="mt-1 block text-xs leading-5 text-muted-foreground">
+          {description}
+        </span>
+      </span>
+    </label>
   )
 }
 
@@ -1089,6 +1236,13 @@ function featuresToForm(features: CrabChatFeatures): FeaturesForm {
     archiving: {
       enabled: features.archiving?.enabled !== false,
     },
+    notes: {
+      enabled: features.notes?.enabled !== false,
+      autoSavePrompts: features.notes?.autoSavePrompts !== false,
+      manualPromptSaving: features.notes?.manualPromptSaving === true,
+      useMonospaceFont: features.notes?.useMonospaceFont === true,
+      storagePath: features.notes?.storagePath || "",
+    },
   }
 }
 
@@ -1096,6 +1250,13 @@ function featureFormToConfig(form: FeaturesForm): CrabChatFeatures {
   return {
     archiving: {
       enabled: form.archiving.enabled,
+    },
+    notes: {
+      enabled: form.notes.enabled,
+      autoSavePrompts: form.notes.autoSavePrompts,
+      manualPromptSaving: form.notes.manualPromptSaving,
+      useMonospaceFont: form.notes.useMonospaceFont,
+      storagePath: form.notes.storagePath.trim(),
     },
   }
 }

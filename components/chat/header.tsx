@@ -13,7 +13,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover"
 import { CircularProgress } from "@/components/ui/circular-progress"
-import { Menu, Download, FileText, FileJson, FileType } from "lucide-react"
+import { Menu, Download, FileText, FileJson, FileType, NotebookText } from "lucide-react"
 import { AgentStatusIndicator } from "@/components/chat/agent-status"
 import type {
   AgentActivity,
@@ -29,6 +29,8 @@ interface ChatHeaderProps {
   agentActivity?: AgentActivity | null
   onOpenSidebar: () => void
   sidebarExpanded: boolean
+  notesEnabled?: boolean
+  onOpenNotes?: () => void
   onExport: (format: "markdown" | "json" | "text") => void
 }
 
@@ -64,6 +66,8 @@ export function ChatHeader({
   agentActivity,
   onOpenSidebar,
   sidebarExpanded,
+  notesEnabled = false,
+  onOpenNotes,
   onExport,
 }: ChatHeaderProps) {
   const [now, setNow] = useState(() => Date.now())
@@ -110,6 +114,17 @@ export function ChatHeader({
             className="mr-1 max-w-[180px] bg-transparent"
             showBotIcon
           />
+        )}
+
+        {notesEnabled && (
+          <button
+            aria-label="Notes"
+            title="Notes"
+            onClick={onOpenNotes}
+            className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          >
+            <NotebookText className="h-4 w-4" />
+          </button>
         )}
 
         <DropdownMenu>

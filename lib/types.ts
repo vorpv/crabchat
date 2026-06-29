@@ -124,6 +124,13 @@ export interface CrabChatFeatures {
   archiving: {
     enabled: boolean
   }
+  notes: {
+    enabled: boolean
+    autoSavePrompts: boolean
+    manualPromptSaving: boolean
+    useMonospaceFont: boolean
+    storagePath: string
+  }
 }
 
 export interface CrabChatState {
@@ -198,4 +205,26 @@ export interface AgentActivity {
   active: boolean
   sessionKey?: string
   updatedAt?: number
+}
+
+export type CrabChatNoteKind = "note" | "prompt"
+
+export interface CrabChatNote {
+  fileName: string
+  title: string
+  displayTitle: string
+  agentId?: string
+  content: string
+  kind: CrabChatNoteKind
+  updatedAt: string
+}
+
+export interface CrabChatNotesList {
+  notes: CrabChatNote[]
+  storagePath: string
+}
+
+export interface CrabChatNoteSaveConflict {
+  conflict: true
+  note: CrabChatNote
 }

@@ -22,6 +22,10 @@ import {
   loadHistory,
   patchSession,
 } from "@/lib/openclaw-gateway"
+import {
+  migrateNotesDirectory,
+  validateNotesStoragePath,
+} from "@/lib/crabchat-notes"
 import type {
   Attachment,
   CrabChatFeatures,
@@ -55,6 +59,13 @@ const defaultModelSelection: ModelReasoningSelection = {
 const defaultFeatures: CrabChatFeatures = {
   archiving: {
     enabled: true,
+  },
+  notes: {
+    enabled: true,
+    autoSavePrompts: true,
+    manualPromptSaving: false,
+    useMonospaceFont: false,
+    storagePath: "",
   },
 }
 
@@ -220,9 +231,18 @@ function upsertOpenClawSession(session: Session) {
 
 function readFeatures() {
   const p = ensureHome()
+  const saved = readJson<Partial<CrabChatFeatures>>(p.features, {})
   return {
     ...defaultFeatures,
-    ...readJson<Partial<CrabChatFeatures>>(p.features, {}),
+    ...saved,
+    archiving: {
+      ...defaultFeatures.archiving,
+      ...(saved.archiving || {}),
+    },
+    notes: {
+      ...defaultFeatures.notes,
+      ...(saved.notes || {}),
+    },
   } as CrabChatFeatures
 }
 
@@ -263,10 +283,26 @@ export function updateCrabChatState(patch: {
   writeCrabChatConfig(next)
   if (patch.pins) writeJson(p.pins, patch.pins)
   if (patch.features) {
-    writeJson(p.features, {
+    const previousFeatures = readFeatures()
+    const nextFeatures = {
+      ...previousFeatures,
       ...readFeatures(),
       ...patch.features,
-    })
+      notes: {
+        ...previousFeatures.notes,
+        ...(patch.features.notes || {}),
+      },
+    }
+    const notesValidation = validateNotesStoragePath(nextFeatures.notes.storagePath)
+    if (!notesValidation.ok) {
+      throw new AppError(
+        notesValidation.error || "Notes storage path is invalid.",
+        400,
+        "INVALID_REQUEST"
+      )
+    }
+    migrateNotesDirectory(previousFeatures, nextFeatures)
+    writeJson(p.features, nextFeatures)
   }
   return getCrabChatState()
 }

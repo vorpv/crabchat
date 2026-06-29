@@ -6,6 +6,7 @@ export const runtime = "nodejs"
 
 const featureFiles: Record<string, string> = {
   "session-archiving": "01_Session_archiving.md",
+  notes: "02_Notes.md",
 }
 
 function getErrorContext(request: Request) {

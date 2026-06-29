@@ -14,7 +14,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover"
-import { ChevronDown, ChevronRight, FileIcon, ImageIcon, SendHorizonal, X } from "lucide-react"
+import { ChevronDown, ChevronRight, FileIcon, ImageIcon, NotebookPen, SendHorizonal, X } from "lucide-react"
 import type {
   ModelOption,
   ModelReasoningSelection,
@@ -29,6 +29,10 @@ interface ChatComposerProps {
   selection: ModelReasoningSelection
   onModelSelect: (modelId: string) => void
   onReasoningSelect: (reasoningLevel: string) => void
+  contentValue?: string
+  onContentChange?: (content: string) => void
+  manualPromptSaving?: boolean
+  onSavePrompt?: (content: string) => void
 }
 
 interface AttachmentPreview {
@@ -83,6 +87,10 @@ export function ChatComposer({
   selection,
   onModelSelect,
   onReasoningSelect,
+  contentValue,
+  onContentChange,
+  manualPromptSaving = false,
+  onSavePrompt,
 }: ChatComposerProps) {
   const [content, setContent] = useState("")
   const [attachments, setAttachments] = useState<AttachmentPreview[]>([])
@@ -101,6 +109,12 @@ export function ChatComposer({
   const didObserveLayoutModeRef = useRef(false)
   const contentRef = useRef(content)
   contentRef.current = content
+
+  useEffect(() => {
+    if (contentValue !== undefined && contentValue !== contentRef.current) {
+      setContent(contentValue)
+    }
+  }, [contentValue])
 
   const syncTextareaLayout = useCallback(() => {
     const textarea = textareaRef.current
@@ -200,10 +214,23 @@ export function ChatComposer({
         : undefined
     )
     setContent("")
+    onContentChange?.("")
     attachments.forEach((attachment) => {
       if (attachment.preview) URL.revokeObjectURL(attachment.preview)
     })
     setAttachments([])
+  }
+
+  const handleContentChange = (nextContent: string) => {
+    setContent(nextContent)
+    onContentChange?.(nextContent)
+  }
+
+  const handleSavePrompt = () => {
+    if (disabled || !content.trim()) return
+    onSavePrompt?.(content)
+    setContent("")
+    onContentChange?.("")
   }
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -377,7 +404,7 @@ export function ChatComposer({
                 <textarea
                   ref={textareaRef}
                   value={content}
-                  onChange={(e) => setContent(e.target.value)}
+                  onChange={(e) => handleContentChange(e.target.value)}
                   onKeyDown={handleKeyDown}
                   placeholder="Type a message..."
                   disabled={disabled}
@@ -491,6 +518,24 @@ export function ChatComposer({
                   </TooltipTrigger>
                   <TooltipContent>Attach image</TooltipContent>
                 </Tooltip>
+
+                {manualPromptSaving && (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={handleSavePrompt}
+                        disabled={disabled || !content.trim()}
+                        className="h-8 w-8 rounded-full text-muted-foreground hover:text-foreground"
+                      >
+                        <NotebookPen className="h-4 w-4" />
+                        <span className="sr-only">Save prompt as note</span>
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>Save prompt as note</TooltipContent>
+                  </Tooltip>
+                )}
 
                 <Tooltip>
                   <TooltipTrigger asChild>

@@ -84,6 +84,13 @@ describe("crabchat store", () => {
       pins: [],
       features: {
         archiving: { enabled: true },
+        notes: {
+          enabled: true,
+          autoSavePrompts: true,
+          manualPromptSaving: false,
+          useMonospaceFont: false,
+          storagePath: "",
+        },
       },
     })
 
@@ -107,7 +114,16 @@ describe("crabchat store", () => {
       settings: { theme: "dark" },
       modelSelection: { model: "openai/gpt-5", reasoningLevel: "high" },
       pins: ["alpha"],
-      features: { archiving: { enabled: false } },
+      features: {
+        archiving: { enabled: false },
+        notes: {
+          enabled: true,
+          autoSavePrompts: true,
+          manualPromptSaving: false,
+          useMonospaceFont: false,
+          storagePath: "",
+        },
+      },
     })
   })
 
