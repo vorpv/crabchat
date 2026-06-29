@@ -773,6 +773,10 @@ async function requestFirst(methods: string[], params?: unknown) {
   })
 }
 
+export async function requestOpenClawGateway(method: string, params?: unknown) {
+  return requestFirst([method], params)
+}
+
 function slugify(value: string | undefined) {
   const slug = (value || "")
     .toLowerCase()

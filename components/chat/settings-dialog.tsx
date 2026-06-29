@@ -308,7 +308,7 @@ export function SettingsDialog({
       setConfig(next)
       setForm(nextForm)
       setSavedForm(nextForm)
-      setRestartNotice(true)
+      setRestartNotice(Boolean(next.restart))
       setRestartError(null)
     } catch (error) {
       setConfigError(error instanceof Error ? error.message : "Could not save OpenClaw config")
@@ -337,7 +337,7 @@ export function SettingsDialog({
           <div className="flex items-center gap-3">
             <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-500" />
             <div className="min-w-0 flex-1">
-              <div>You need to restart OpenClaw to apply these changes</div>
+              <div>OpenClaw accepted the config change</div>
               {restartError && (
                 <div className="mt-1 truncate text-xs text-destructive" title={restartError}>
                   {restartError}
@@ -346,7 +346,7 @@ export function SettingsDialog({
             </div>
             <Button size="sm" onClick={handleRestart} disabled={restarting}>
               {restarting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCw className="h-3.5 w-3.5" />}
-              Restart
+              Restart now
             </Button>
           </div>
         </div>

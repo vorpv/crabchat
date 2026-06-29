@@ -16,6 +16,10 @@ import {
   subscribeSessionActivity,
   toErrorResponse,
 } from "@/lib/openclaw-gateway"
+import {
+  saveOpenClawSessionConfig,
+  validateAndRestartOpenClaw,
+} from "@/lib/openclaw-config"
 import { useTempCrabChatHome } from "./test-utils"
 
 type GatewayFrame = Record<string, unknown>
@@ -419,6 +423,105 @@ describe("openclaw gateway", () => {
         }),
       ])
     )
+  })
+
+  it("patches OpenClaw config through the gateway while replacing the session subtree", async () => {
+    let config: GatewayFrame = {
+      gateway: {
+        url: "ws://remote.example:18789",
+        auth: { password: "secret" },
+      },
+      session: {
+        scope: "per-sender",
+        dmScope: "per-peer",
+        reset: { mode: "idle", idleMinutes: 30 },
+        resetByType: {
+          direct: { mode: "daily", atHour: 7 },
+          group: { mode: "idle", idleMinutes: 120 },
+        },
+        maintenance: { maxEntries: 50 },
+      },
+    }
+    let hash = "hash-1"
+    let patchParams: GatewayFrame | undefined
+    const harness = await startGatewayHarness({
+      "config.get": () => ({
+        exists: true,
+        hash,
+        config,
+      }),
+      "config.patch": (params) => {
+        patchParams = asRecord(params)
+        expect(patchParams.baseHash).toBe("hash-1")
+        expect(JSON.parse(String(patchParams.raw))).toEqual({
+          session: {
+            scope: "global",
+            dmScope: null,
+            reset: null,
+            resetByType: null,
+            maintenance: null,
+          },
+        })
+        config = {
+          ...config,
+          session: {
+            scope: "global",
+          },
+        }
+        hash = "hash-2"
+        return {
+          ok: true,
+          config,
+          restart: { scheduled: true },
+        }
+      },
+    })
+    cleanup.push(harness.close)
+    configureGateway(harness.url)
+
+    await expect(saveOpenClawSessionConfig({ scope: "global" })).resolves.toMatchObject({
+      connection: {
+        url: harness.url,
+        password: "secret",
+      },
+      session: {
+        scope: "global",
+      },
+      restart: { scheduled: true },
+    })
+
+    expect(patchParams).toBeDefined()
+    expect(harness.requests.map((request) => request.method)).toEqual([
+      "connect",
+      "config.get",
+      "connect",
+      "config.patch",
+    ])
+  })
+
+  it("requests OpenClaw restart through the gateway", async () => {
+    const harness = await startGatewayHarness({
+      "gateway.restart.request": (params) => ({
+        ok: true,
+        status: "scheduled",
+        params,
+      }),
+    })
+    cleanup.push(harness.close)
+    configureGateway(harness.url)
+
+    await expect(validateAndRestartOpenClaw()).resolves.toEqual({
+      ok: true,
+      result: {
+        ok: true,
+        status: "scheduled",
+        params: { reason: "CrabChat settings" },
+      },
+    })
+    expect(harness.requests.map((request) => request.method)).toEqual([
+      "connect",
+      "gateway.restart.request",
+    ])
   })
 
   it("normalizes history messages, tool calls, attachments, reasoning, and usage", async () => {

@@ -1,9 +1,5 @@
-import { execFile, spawn } from "node:child_process"
-import { promisify } from "node:util"
 import { getOpenClawConnectionConfig } from "@/lib/crabchat-home"
-import { AppError } from "@/lib/openclaw-gateway"
-
-const execFileAsync = promisify(execFile)
+import { AppError, requestOpenClawGateway } from "@/lib/openclaw-gateway"
 
 type JsonObject = Record<string, unknown>
 
@@ -34,6 +30,7 @@ export interface OpenClawConfigView {
     password: string
   }
   session: OpenClawSessionConfig
+  restart?: unknown
 }
 
 function asObject(value: unknown): JsonObject | undefined {
@@ -44,78 +41,6 @@ function asObject(value: unknown): JsonObject | undefined {
 
 function asString(value: unknown) {
   return typeof value === "string" ? value : undefined
-}
-
-function parseJsonOutput(stdout: string, fallback: JsonObject = {}) {
-  const trimmed = stdout.trim()
-  if (!trimmed) return fallback
-  try {
-    return JSON.parse(trimmed) as JsonObject
-  } catch (error) {
-    throw new AppError(`OpenClaw returned invalid JSON: ${String(error)}`, 500)
-  }
-}
-
-async function runOpenClaw(args: string[]) {
-  try {
-    const result = await execFileAsync("openclaw", args, {
-      timeout: 120_000,
-      maxBuffer: 1024 * 1024,
-    })
-    return {
-      stdout: result.stdout,
-      stderr: result.stderr,
-    }
-  } catch (error) {
-    const err = error as Error & { stdout?: string; stderr?: string }
-    throw new AppError(err.stderr || err.stdout || err.message || "OpenClaw command failed.", 500)
-  }
-}
-
-function runOpenClawWithInput(args: string[], input: string) {
-  return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
-    const child = spawn("openclaw", args, {
-      stdio: ["pipe", "pipe", "pipe"],
-    })
-    let stdout = ""
-    let stderr = ""
-    const timeout = setTimeout(() => {
-      child.kill("SIGTERM")
-      reject(new AppError("OpenClaw command timed out.", 500))
-    }, 120_000)
-
-    child.stdout.setEncoding("utf8")
-    child.stderr.setEncoding("utf8")
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk
-    })
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk
-    })
-    child.on("error", (error) => {
-      clearTimeout(timeout)
-      reject(new AppError(error.message, 500))
-    })
-    child.on("close", (code) => {
-      clearTimeout(timeout)
-      if (code === 0) {
-        resolve({ stdout, stderr })
-        return
-      }
-      reject(new AppError(stderr || stdout || `OpenClaw exited with code ${code}.`, 500))
-    })
-
-    child.stdin.end(input)
-  })
-}
-
-async function getConfigNode(path: string) {
-  const result = await runOpenClaw(["config", "get", path, "--json"]).catch((error) => {
-    const message = error instanceof Error ? error.message : String(error)
-    if (message.includes("Config path not found")) return { stdout: "{}" }
-    throw error
-  })
-  return parseJsonOutput(result.stdout)
 }
 
 function resolveGatewayUrl(gateway: JsonObject) {
@@ -197,11 +122,44 @@ function compactObject<T extends JsonObject>(value: T): T {
   return value
 }
 
-export async function getOpenClawConfigView(): Promise<OpenClawConfigView> {
-  const [gateway, session] = await Promise.all([
-    getConfigNode("gateway"),
-    getConfigNode("session"),
-  ])
+function isPlainObject(value: unknown): value is JsonObject {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value)
+}
+
+function makeReplacementMergePatch(current: unknown, next: unknown): unknown {
+  if (!isPlainObject(current) || !isPlainObject(next)) return next
+
+  const patch: JsonObject = {}
+  const keys = new Set([...Object.keys(current), ...Object.keys(next)])
+
+  for (const key of keys) {
+    if (!Object.hasOwn(next, key)) {
+      patch[key] = null
+      continue
+    }
+
+    const currentValue = current[key]
+    const nextValue = next[key]
+    patch[key] = makeReplacementMergePatch(currentValue, nextValue)
+  }
+
+  return patch
+}
+
+async function getConfigSnapshot() {
+  const snapshot = asObject(await requestOpenClawGateway("config.get", {})) || {}
+  const config = asObject(snapshot.config) || asObject(snapshot.resolved) || {}
+  return {
+    snapshot,
+    config,
+    hash: asString(snapshot.hash),
+    exists: snapshot.exists !== false,
+  }
+}
+
+function configViewFromConfig(config: JsonObject, restart?: unknown): OpenClawConfigView {
+  const gateway = asObject(config.gateway) || {}
+  const session = asObject(config.session) || {}
 
   return {
     connection: {
@@ -209,28 +167,42 @@ export async function getOpenClawConfigView(): Promise<OpenClawConfigView> {
       password: resolveGatewayPassword(gateway),
     },
     session: normalizeSessionConfig(session),
+    ...(restart !== undefined ? { restart } : {}),
   }
+}
+
+export async function getOpenClawConfigView(): Promise<OpenClawConfigView> {
+  const { config } = await getConfigSnapshot()
+  return configViewFromConfig(config)
 }
 
 export async function saveOpenClawSessionConfig(
   session: OpenClawSessionConfig
 ): Promise<OpenClawConfigView> {
-  const patch = {
-    session: compactObject(structuredClone(session) as JsonObject),
+  const { config, hash, exists } = await getConfigSnapshot()
+  if (exists && !hash) {
+    throw new AppError("OpenClaw config hash unavailable; reload the config before saving.", 503)
   }
-  await runOpenClawWithInput(
-    ["config", "patch", "--stdin", "--replace-path", "session"],
-    JSON.stringify(patch)
-  )
-  return getOpenClawConfigView()
+  const currentSession = asObject(config.session) || {}
+  const nextSession = compactObject(structuredClone(session) as JsonObject)
+  const patch = {
+    session: makeReplacementMergePatch(currentSession, nextSession),
+  }
+  const patchParams = {
+    raw: JSON.stringify(patch),
+    ...(hash ? { baseHash: hash } : {}),
+  }
+  const result = asObject(await requestOpenClawGateway("config.patch", patchParams)) || {}
+  const nextConfig = asObject(result.config) || (await getConfigSnapshot()).config
+  return configViewFromConfig(nextConfig, result.restart)
 }
 
 export async function validateAndRestartOpenClaw() {
-  await runOpenClaw(["config", "validate", "--json"])
-  const restart = await runOpenClaw(["gateway", "restart", "--safe", "--json"])
+  const restart = await requestOpenClawGateway("gateway.restart.request", {
+    reason: "CrabChat settings",
+  })
   return {
     ok: true,
-    stdout: restart.stdout,
-    stderr: restart.stderr,
+    result: restart,
   }
 }

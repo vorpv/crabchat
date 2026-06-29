@@ -155,7 +155,7 @@ export async function saveOpenClawSessionConfig(session: OpenClawSessionConfig) 
 }
 
 export async function restartOpenClaw() {
-  return apiFetch<{ ok: true; stdout?: string; stderr?: string }>("/api/openclaw/config", {
+  return apiFetch<{ ok: true; result?: unknown }>("/api/openclaw/config", {
     method: "POST",
     body: JSON.stringify({ action: "restart" }),
   })

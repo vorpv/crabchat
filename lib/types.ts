@@ -160,6 +160,7 @@ export interface OpenClawConfigView {
     password: string
   }
   session: OpenClawSessionConfig
+  restart?: unknown
 }
 
 export interface ProviderUsageWindow {
