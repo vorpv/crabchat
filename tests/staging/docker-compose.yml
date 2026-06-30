@@ -1,0 +1,43 @@
+services:
+  mock-openai:
+    image: node:22-alpine
+    command: ["node", "/app/server.mjs"]
+    working_dir: /app
+    ports:
+      - "${MOCK_OPENAI_PORT:-8080}:8080"
+    volumes:
+      - ./mock-openai:/app:ro
+    environment:
+      MOCK_OPENAI_PORT: "8080"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  openclaw:
+    image: "${OPENCLAW_IMAGE:?Set OPENCLAW_IMAGE in tests/staging/.env or your shell}"
+    depends_on:
+      mock-openai:
+        condition: service_healthy
+    ports:
+      - "${OPENCLAW_GATEWAY_PORT:-18789}:18789"
+    environment:
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-test-openai-key}"
+      OPENAI_BASE_URL: "http://mock-openai:8080/v1"
+      OPENAI_API_BASE_URL: "http://mock-openai:8080/v1"
+      OPENAI_MODEL: "${OPENAI_MODEL:-gpt-5-staging-mock}"
+      OPENCLAW_GATEWAY_HOST: "0.0.0.0"
+      OPENCLAW_GATEWAY_PORT: "18789"
+      OPENCLAW_GATEWAY_TOKEN: "${OPENCLAW_GATEWAY_TOKEN:-test-token}"
+    volumes:
+      - openclaw-data:/data
+
+volumes:
+  openclaw-data:

@@ -1,9 +1,10 @@
-import { defineConfig } from "vitest/config"
+import { configDefaults, defineConfig } from "vitest/config"
 import { fileURLToPath } from "node:url"
 
 export default defineConfig({
   test: {
     environment: "node",
+    exclude: [...configDefaults.exclude, "tests/staging/**"],
     globals: false,
     setupFiles: ["./tests/setup.ts"],
     restoreMocks: true,

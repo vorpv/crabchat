@@ -9,6 +9,10 @@
     "start": "next start",
     "lint": "eslint .",
     "test": "vitest run",
+    "test:staging": "node tests/staging/run-staging.mjs",
+    "test:staging:run": "node tests/staging/prepare-crabchat-home.mjs && playwright test -c playwright.staging.config.ts",
+    "test:staging:services": "docker compose --env-file tests/staging/.env -f tests/staging/docker-compose.yml up --wait",
+    "test:staging:services:down": "docker compose --env-file tests/staging/.env -f tests/staging/docker-compose.yml down",
     "test:watch": "vitest",
     "check": "npm run test && npm run build"
   },
@@ -32,6 +36,7 @@
     "ws": "^8.21.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "@tailwindcss/postcss": "^4.2.0",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
