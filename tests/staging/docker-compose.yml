@@ -23,6 +23,17 @@ services:
 
   openclaw:
     image: "${OPENCLAW_IMAGE:?Set OPENCLAW_IMAGE in tests/staging/.env or your shell}"
+    command:
+      [
+        "node",
+        "openclaw.mjs",
+        "gateway",
+        "--allow-unconfigured",
+        "--auth",
+        "token",
+        "--token",
+        "${OPENCLAW_GATEWAY_TOKEN:-test-token}",
+      ]
     depends_on:
       mock-openai:
         condition: service_healthy

@@ -15,6 +15,7 @@ next-env.d.ts
 
 # Tests and coverage
 coverage/
+test-results/
 
 # Logs
 *.log

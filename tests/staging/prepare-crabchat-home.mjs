@@ -1,7 +1,28 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+
+function loadStagingEnv() {
+  const path = new URL("./.env", import.meta.url)
+  if (!existsSync(path)) return
+
+  for (const line of readFileSync(path, "utf8").split(/\r?\n/)) {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith("#")) continue
+
+    const separator = trimmed.indexOf("=")
+    if (separator < 0) continue
+
+    const key = trimmed.slice(0, separator).trim()
+    const rawValue = trimmed.slice(separator + 1).trim()
+    const value = rawValue.replace(/^['"]|['"]$/g, "")
+    if (key && process.env[key] === undefined) process.env[key] = value
+  }
+}
+
+loadStagingEnv()
 
 const home = process.env.CRABCHAT_STAGING_HOME || "/tmp/outclaw-staging/crabchat-home"
-const gatewayUrl = process.env.OPENCLAW_GATEWAY_URL || "ws://127.0.0.1:18789"
+const gatewayPort = process.env.OPENCLAW_GATEWAY_PORT || "18789"
+const gatewayUrl = process.env.OPENCLAW_GATEWAY_URL || `ws://127.0.0.1:${gatewayPort}`
 const token = process.env.OPENCLAW_GATEWAY_TOKEN || "test-token"
 
 if (!process.env.CRABCHAT_STAGING_KEEP_HOME) {
